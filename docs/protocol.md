@@ -56,7 +56,7 @@
 
 从本版本开始，整个网络传输隧道中的 Packet `Payload` 数据层已由明文强制迁移为 **ChaCha20-Poly1305 AEAD** 对密文进行密封传递。Packet `Header` 依然保持明文用于底层路由分发。
 
-- 派生安全秘钥（Key Derivation）：协议使用 `HKDF-SHA256` 以及内置的 Salt（`fspeed-rs-v1`）从双端输入的 shared secret 参数上衍生出独立的对称 AES AEAD `32-byte` Key。
+- 派生安全秘钥（Key Derivation）：协议使用 `HKDF-SHA256` 以及内置的 Salt（`fspeed-rs-v1`）从双端输入的 shared secret 参数上衍生出独立的对称 ChaCha20-Poly1305 AEAD `32-byte` Key。
 - AAD (Additional Authenticated Data) 防篡改绑定：将传输所附带的包头（即 Magic, Version, Type, Flags, ConnID, Seq, Ack, Window，*但不包含动态 payload_len*）与生成的密文做 AAD 绑定。包头遭劫持篡改将立刻抛出 Decryption Failed 异常。
 
 **全新的加密 Payload 构建设计 (OpenConnection):**
