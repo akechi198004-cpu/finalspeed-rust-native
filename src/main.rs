@@ -9,6 +9,7 @@ pub mod protocol;
 pub mod reliability;
 pub mod server;
 pub mod session;
+pub mod socks5;
 pub mod transport;
 
 use clap::Parser;
@@ -38,7 +39,12 @@ async fn main() -> anyhow::Result<()> {
             server,
             secret,
             map,
+            socks5,
         } => {
+            if map.is_empty() && socks5.is_none() {
+                anyhow::bail!("Client requires at least one --map or --socks5 listener.");
+            }
+
             tracing::info!("Starting client mode...");
             tracing::info!("Target Server UDP: {}", server);
             tracing::info!("Auth Secret: <hidden>");
@@ -49,7 +55,10 @@ async fn main() -> anyhow::Result<()> {
                     mapping.target
                 );
             }
-            client::run(server, secret, map).await?;
+            if let Some(s5) = socks5 {
+                tracing::info!("SOCKS5 listener active on {}", s5);
+            }
+            client::run(server, secret, map, socks5).await?;
         }
     }
 

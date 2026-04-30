@@ -9,12 +9,18 @@ use crate::session::{ClientSessionManager, SessionHandle, SessionState};
 use crate::transport::ConnectionIdGenerator;
 
 use bytes::{Bytes, BytesMut};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 
-pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::Result<()> {
+pub async fn run(
+    server: String,
+    secret: String,
+    map: Vec<PortMap>,
+    socks5: Option<SocketAddr>,
+) -> anyhow::Result<()> {
     tracing::info!("Initializing client, mapping {} ports", map.len());
 
     // Resolve server address
@@ -496,6 +502,325 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
             }
         });
 
+        tasks.push(handle);
+    }
+
+    if let Some(socks5_addr) = socks5 {
+        tracing::info!("Setting up SOCKS5 listener on {}", socks5_addr);
+        let listener = TcpListener::bind(&socks5_addr).await?;
+        let socket_clone = Arc::clone(&socket);
+        let id_gen_clone = Arc::clone(&id_generator);
+        let secret_clone = Arc::clone(&secret_arc);
+        let session_mgr_clone = session_manager.clone();
+        let server_addr_clone = server_addr;
+
+        let handle = tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((mut tcp_stream, peer_addr)) => {
+                        let conn_id = id_gen_clone.next();
+                        tracing::info!(
+                            "Accepted SOCKS5 connection from {} (ConnId: {})",
+                            peer_addr,
+                            conn_id
+                        );
+
+                        let socket_inner = Arc::clone(&socket_clone);
+                        let secret_inner = Arc::clone(&secret_clone);
+                        let session_mgr_inner = session_mgr_clone.clone();
+
+                        tokio::spawn(async move {
+                            use crate::socks5::{
+                                handle_socks5_greeting, handle_socks5_request, send_socks5_failure,
+                                send_socks5_success,
+                            };
+
+                            if let Err(e) = handle_socks5_greeting(&mut tcp_stream).await {
+                                tracing::warn!("SOCKS5 greeting failed: {}", e);
+                                return;
+                            }
+
+                            let target = match handle_socks5_request(&mut tcp_stream).await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::warn!("SOCKS5 request failed: {}", e);
+                                    return;
+                                }
+                            };
+
+                            let target_str = target.to_string();
+                            tracing::info!("SOCKS5 routing ConnId: {} to {}", conn_id, target_str);
+
+                            let payload_str = format!(
+                                "target={}\ntimestamp_ms={}",
+                                target_str,
+                                current_timestamp_ms()
+                            );
+                            let payload = Bytes::from(payload_str);
+
+                            match Packet::try_new(
+                                PacketType::OpenConnection,
+                                FLAG_ENCRYPTED,
+                                conn_id,
+                                0,
+                                0,
+                                1024,
+                                Bytes::new(),
+                            ) {
+                                Ok(mut packet) => {
+                                    let key = derive_key(&secret_inner);
+                                    let aad = build_aad(&packet.header);
+
+                                    match encrypt_payload(&payload, &key, &aad) {
+                                        Ok(encrypted_payload) => {
+                                            packet.payload = encrypted_payload.clone();
+                                            packet.header.payload_len =
+                                                encrypted_payload.len() as u16;
+
+                                            let (mut read_half, mut write_half) =
+                                                tcp_stream.into_split();
+                                            let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
+                                            let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
+
+                                            session_mgr_inner
+                                                .insert_pending(
+                                                    conn_id,
+                                                    SessionHandle {
+                                                        sender: tx,
+                                                        state: SessionState::Pending,
+                                                    },
+                                                    hs_tx,
+                                                )
+                                                .await;
+
+                                            match encode_packet(&packet) {
+                                                Ok(encoded) => {
+                                                    if let Err(e) = socket_inner
+                                                        .send_to(&encoded, server_addr_clone)
+                                                        .await
+                                                    {
+                                                        tracing::error!(
+                                                            "Failed to send UDP packet: {}",
+                                                            e
+                                                        );
+                                                        session_mgr_inner.remove(&conn_id).await;
+                                                        let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                    } else {
+                                                        tracing::info!(
+                                                            "Sent OpenConnection packet for SOCKS5 {} to server",
+                                                            conn_id
+                                                        );
+
+                                                        let handshake_result =
+                                                            tokio::time::timeout(
+                                                                std::time::Duration::from_secs(5),
+                                                                hs_rx,
+                                                            )
+                                                            .await;
+
+                                                        match handshake_result {
+                                                            Ok(Ok(true)) => {
+                                                                tracing::info!(
+                                                                    "SOCKS5 Handshake successful for {}",
+                                                                    conn_id
+                                                                );
+                                                                session_mgr_inner
+                                                                    .establish(&conn_id)
+                                                                    .await;
+                                                                if let Err(e) = send_socks5_success(
+                                                                    &mut write_half,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    tracing::warn!(
+                                                                        "Failed to send SOCKS5 success: {}",
+                                                                        e
+                                                                    );
+                                                                    session_mgr_inner
+                                                                        .remove(&conn_id)
+                                                                        .await;
+                                                                    return;
+                                                                }
+                                                            }
+                                                            _ => {
+                                                                tracing::warn!(
+                                                                    "SOCKS5 Handshake failed/timeout for {}",
+                                                                    conn_id
+                                                                );
+                                                                session_mgr_inner
+                                                                    .remove(&conn_id)
+                                                                    .await;
+                                                                let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                                return;
+                                                            }
+                                                        }
+
+                                                        let read_socket = Arc::clone(&socket_inner);
+                                                        let read_session_mgr =
+                                                            session_mgr_inner.clone();
+                                                        let read_secret_clone =
+                                                            secret_inner.clone();
+
+                                                        tokio::spawn(async move {
+                                                            let mut tcp_buf = vec![0u8; 1200];
+                                                            let mut seq: u32 = 0;
+                                                            let read_key =
+                                                                derive_key(&read_secret_clone);
+
+                                                            loop {
+                                                                match read_half
+                                                                    .read(&mut tcp_buf)
+                                                                    .await
+                                                                {
+                                                                    Ok(0) => {
+                                                                        tracing::info!(
+                                                                            "Local SOCKS5 TCP EOF for {}",
+                                                                            conn_id
+                                                                        );
+                                                                        break;
+                                                                    }
+                                                                    Ok(n) => {
+                                                                        let plaintext =
+                                                                            &tcp_buf[..n];
+                                                                        seq = seq.wrapping_add(1);
+
+                                                                        if let Ok(mut data_packet) =
+                                                                            Packet::try_new(
+                                                                                PacketType::Data,
+                                                                                FLAG_ENCRYPTED,
+                                                                                conn_id,
+                                                                                seq,
+                                                                                0,
+                                                                                0,
+                                                                                Bytes::new(),
+                                                                            )
+                                                                        {
+                                                                            let data_aad =
+                                                                                build_aad(
+                                                                                    &data_packet
+                                                                                        .header,
+                                                                                );
+                                                                            if let Ok(
+                                                                                encrypted_data,
+                                                                            ) = encrypt_payload(
+                                                                                plaintext,
+                                                                                &read_key,
+                                                                                &data_aad,
+                                                                            ) {
+                                                                                data_packet
+                                                                                    .payload =
+                                                                                    encrypted_data
+                                                                                        .clone();
+                                                                                data_packet
+                                                                                    .header
+                                                                                    .payload_len =
+                                                                                    encrypted_data
+                                                                                        .len()
+                                                                                        as u16;
+
+                                                                                if let Ok(encoded) = encode_packet(&data_packet)
+                                                                                    && let Err(e) = read_socket.send_to(&encoded, server_addr_clone).await {
+                                                                                        tracing::warn!("Failed to send SOCKS5 Data packet: {}", e);
+                                                                                    }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        tracing::error!(
+                                                                            "Failed to read from local SOCKS5 TCP: {}",
+                                                                            e
+                                                                        );
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            read_session_mgr.remove(&conn_id).await;
+                                                            if let Ok(mut close_packet) =
+                                                                Packet::try_new(
+                                                                    PacketType::Close,
+                                                                    FLAG_ENCRYPTED,
+                                                                    conn_id,
+                                                                    seq.wrapping_add(1),
+                                                                    0,
+                                                                    0,
+                                                                    Bytes::new(),
+                                                                )
+                                                            {
+                                                                let close_aad =
+                                                                    build_aad(&close_packet.header);
+                                                                if let Ok(encrypted_close) =
+                                                                    encrypt_payload(
+                                                                        b"", &read_key, &close_aad,
+                                                                    )
+                                                                {
+                                                                    close_packet.payload =
+                                                                        encrypted_close.clone();
+                                                                    close_packet
+                                                                        .header
+                                                                        .payload_len =
+                                                                        encrypted_close.len()
+                                                                            as u16;
+                                                                    if let Ok(encoded) =
+                                                                        encode_packet(&close_packet)
+                                                                    {
+                                                                        let _ = read_socket
+                                                                            .send_to(
+                                                                                &encoded,
+                                                                                server_addr_clone,
+                                                                            )
+                                                                            .await;
+                                                                    }
+                                                                }
+                                                            }
+                                                        });
+
+                                                        tokio::spawn(async move {
+                                                            while let Some(data) = rx.recv().await {
+                                                                if let Err(e) = write_half
+                                                                    .write_all(&data)
+                                                                    .await
+                                                                {
+                                                                    tracing::error!(
+                                                                        "Failed to write to local SOCKS5 TCP: {}",
+                                                                        e
+                                                                    );
+                                                                    break;
+                                                                }
+                                                            }
+                                                            let _ = write_half.shutdown().await;
+                                                            tracing::debug!(
+                                                                "Local SOCKS5 TCP writer task exiting for {}",
+                                                                conn_id
+                                                            );
+                                                        });
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        "Failed to encode SOCKS5 packet: {}",
+                                                        e
+                                                    );
+                                                    session_mgr_inner.remove(&conn_id).await;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => tracing::error!(
+                                            "Failed to encrypt SOCKS5 OpenConnection payload: {}",
+                                            e
+                                        ),
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to construct SOCKS5 packet: {}", e)
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => tracing::error!("Error accepting SOCKS5 connection: {}", e),
+                }
+            }
+        });
         tasks.push(handle);
     }
 

@@ -20,7 +20,7 @@ pub async fn validate_open_connection_packet(
     peer_addr: SocketAddr,
     secret: &str,
     allowlist: Option<&[SocketAddr]>,
-) -> Result<SocketAddr, String> {
+) -> Result<String, String> {
     if packet.header.flags & FLAG_ENCRYPTED == 0 {
         tracing::warn!(peer_addr = %peer_addr, "OpenConnection missing FLAG_ENCRYPTED");
         return Err("Missing FLAG_ENCRYPTED".to_string());
@@ -38,11 +38,16 @@ pub async fn validate_open_connection_packet(
     })?;
 
     if let Some(allowed) = allowlist {
-        if !allowed.contains(&payload.target) {
+        let is_allowed = match payload.target.parse::<SocketAddr>() {
+            Ok(addr) => allowed.contains(&addr),
+            Err(_) => false, // Reject domain targets if an allowlist is configured
+        };
+
+        if !is_allowed {
             tracing::warn!(
                 peer_addr = %peer_addr,
                 target = %payload.target,
-                "Target not in allowlist"
+                "Target not in allowlist or domain target rejected by allowlist policy"
             );
             return Err("Target not allowed".to_string());
         }
@@ -120,7 +125,7 @@ pub async fn run(
                                         "Attempting TCP connection to target: {}",
                                         target_addr
                                     );
-                                    match TcpStream::connect(target_addr).await {
+                                    match TcpStream::connect(target_addr.clone()).await {
                                         Ok(tcp_stream) => {
                                             tracing::info!(
                                                 "Successfully connected to target: {}",
@@ -523,7 +528,7 @@ mod tests {
         let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), target_addr);
+        assert_eq!(result.unwrap(), target_addr.to_string());
     }
 
     #[tokio::test]
@@ -572,7 +577,7 @@ mod tests {
                 .await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), target_addr);
+        assert_eq!(result.unwrap(), target_addr.to_string());
     }
 
     #[tokio::test]

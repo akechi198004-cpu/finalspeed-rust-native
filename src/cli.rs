@@ -43,14 +43,18 @@ pub enum Commands {
         secret: String,
 
         /// Port mappings in the format local_addr:local_port=target_addr:target_port
-        /// (e.g., 127.0.0.1:2222=127.0.0.1:22)
-        #[arg(long, value_parser = parse_port_map, required = true)]
+        /// (e.g., 127.0.0.1:2222=127.0.0.1:22 or 127.0.0.1:8080=example.com:80)
+        #[arg(long, value_parser = parse_port_map, required = false)]
         map: Vec<PortMap>,
+
+        /// Local SOCKS5 listener address (e.g., 127.0.0.1:1080)
+        #[arg(long, required = false)]
+        socks5: Option<SocketAddr>,
     },
 }
 
 fn parse_port_map(s: &str) -> std::result::Result<PortMap, String> {
-    let parts: Vec<&str> = s.split('=').collect();
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
     if parts.len() != 2 {
         return Err(format!(
             "Invalid port map format. Expected 'local=target', got '{}'",
@@ -60,8 +64,14 @@ fn parse_port_map(s: &str) -> std::result::Result<PortMap, String> {
 
     let local = SocketAddr::from_str(parts[0])
         .map_err(|e| format!("Invalid local address '{}': {}", parts[0], e))?;
-    let target = SocketAddr::from_str(parts[1])
-        .map_err(|e| format!("Invalid target address '{}': {}", parts[1], e))?;
+    let target = parts[1].to_string();
+
+    if target.is_empty() {
+        return Err(format!(
+            "Invalid target address '{}': cannot be empty",
+            parts[1]
+        ));
+    }
 
     Ok(PortMap { local, target })
 }
@@ -131,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn test_client_requires_map() {
+    fn test_client_socks5_only() {
         let args = vec![
             "fspeed-rs",
             "client",
@@ -139,11 +149,44 @@ mod tests {
             "127.0.0.1:150",
             "--secret",
             "test123",
+            "--socks5",
+            "127.0.0.1:1080",
         ];
 
-        let result = Cli::try_parse_from(args);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let cli = Cli::parse_from(args);
+
+        match cli.command {
+            Commands::Client { map, socks5, .. } => {
+                assert!(map.is_empty());
+                assert_eq!(socks5.unwrap().to_string(), "127.0.0.1:1080");
+            }
+            _ => panic!("Expected Client command"),
+        }
+    }
+
+    #[test]
+    fn test_client_map_and_socks5() {
+        let args = vec![
+            "fspeed-rs",
+            "client",
+            "--server",
+            "127.0.0.1:150",
+            "--secret",
+            "test123",
+            "--map",
+            "127.0.0.1:2222=127.0.0.1:22",
+            "--socks5",
+            "127.0.0.1:1080",
+        ];
+
+        let cli = Cli::parse_from(args);
+
+        match cli.command {
+            Commands::Client { map, socks5, .. } => {
+                assert_eq!(map.len(), 1);
+                assert_eq!(socks5.unwrap().to_string(), "127.0.0.1:1080");
+            }
+            _ => panic!("Expected Client command"),
+        }
     }
 }

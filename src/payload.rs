@@ -1,11 +1,10 @@
-use std::net::SocketAddr;
 use std::str;
 
 use crate::error::{FSpeedError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenConnectionRequest {
-    pub target: SocketAddr,
+    pub target: String,
     pub timestamp_ms: u64,
 }
 
@@ -93,10 +92,7 @@ pub fn parse_open_connection_payload(payload: &[u8]) -> Result<OpenConnectionReq
                 if target.is_some() {
                     return Err(FSpeedError::DuplicateKey("target".to_string()));
                 }
-                let addr: SocketAddr = value
-                    .parse()
-                    .map_err(|_| FSpeedError::InvalidTargetAddr(value.to_string()))?;
-                target = Some(addr);
+                target = Some(value.to_string());
             }
             "timestamp_ms" => {
                 if timestamp_ms.is_some() {
@@ -131,18 +127,15 @@ mod tests {
     fn test_parse_valid_payload() {
         let payload = b"target=127.0.0.1:22\ntimestamp_ms=1234567890";
         let req = parse_open_connection_payload(payload).unwrap();
-        assert_eq!(req.target, "127.0.0.1:22".parse::<SocketAddr>().unwrap());
+        assert_eq!(req.target, "127.0.0.1:22");
         assert_eq!(req.timestamp_ms, 1234567890);
     }
 
     #[test]
     fn test_parse_valid_payload_reverse_order() {
-        let payload = b"timestamp_ms=1234567890\r\ntarget=192.168.1.1:8080\r\n";
+        let payload = b"timestamp_ms=1234567890\r\ntarget=example.com:8080\r\n";
         let req = parse_open_connection_payload(payload).unwrap();
-        assert_eq!(
-            req.target,
-            "192.168.1.1:8080".parse::<SocketAddr>().unwrap()
-        );
+        assert_eq!(req.target, "example.com:8080");
         assert_eq!(req.timestamp_ms, 1234567890);
     }
 
@@ -165,13 +158,6 @@ mod tests {
         let payload = b"target=127.0.0.1:22\ntimestamp_ms=not_a_number";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::InvalidTimestamp));
-    }
-
-    #[test]
-    fn test_parse_invalid_target() {
-        let payload = b"target=not_an_ip:22\ntimestamp_ms=1234567890";
-        let err = parse_open_connection_payload(payload).unwrap_err();
-        assert!(matches!(err, FSpeedError::InvalidTargetAddr(_)));
     }
 
     #[test]
