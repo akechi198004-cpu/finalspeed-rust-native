@@ -95,7 +95,7 @@
 ssh -p 2222 root@127.0.0.1
 ```
 
-## 7. HTTP 映射示例
+## 7. HTTP 映射示例 与 SOCKS5 代理模式
 
 如果您在 VPS `8080` 端口搭建了一个内部测试 Web 服务。
 
@@ -104,14 +104,27 @@ ssh -p 2222 root@127.0.0.1
 ./fspeed-rs server --listen 0.0.0.0:15000 --secret your_secure_pass --allow 127.0.0.1:8080
 ```
 
-**客户端端口映射:**
+**客户端静态端口映射:**
 ```bash
 ./fspeed-rs client --server 198.51.100.1:15000 --secret your_secure_pass --map 127.0.0.1:18080=127.0.0.1:8080
 ```
 
-**访问验证:**
+**静态映射访问验证:**
 ```bash
 curl http://127.0.0.1:18080
+```
+
+如果您不想配置复杂的静态 Map 列表，希望利用浏览器等原生代理功能直接利用远端服务端去触达公网/内网，也可以使用 **SOCKS5** 动态代理模式。
+
+**注意：SOCKS5 入口服务只应开启在 Client（客户端本地计算机）侧，请不要将它暴露。这有助于保护远端 Server 不被任意人拿作跳板。**
+
+**客户端动态 SOCKS5 监听配置:**
+```bash
+./fspeed-rs client --server 198.51.100.1:15000 --secret your_secure_pass --socks5 127.0.0.1:1080
+```
+**动态代理访问验证:**
+```bash
+curl --socks5-hostname 127.0.0.1:1080 http://example.com
 ```
 
 ## 8. 常见问题 (FAQ)
@@ -123,8 +136,8 @@ curl http://127.0.0.1:18080
 **Q: Server 日志提示收到 `Malformed packet received`？**
 - 此提示意味着收到了不符合本系统自定义报头格式的 UDP 数据包。由于 UDP 端口长期对外暴露，可能受到来自外网扫描工具的探测报文干扰。本项目不建议暴露在外网，如遇该提示且源 IP 非您的 Client IP，可暂时忽略。
 
-**Q: 日志提示 `OpenConnection secret mismatch`？**
-- Client 的 `--secret` 和 Server 的 `--secret` 不匹配。请确保两端传入的鉴权字符串一模一样。
+**Q: 日志提示 `DecryptFailed` / `Invalid shared secret` 等认证错位提示？**
+- 此时代表用于衍生密钥匹配的 Client `--secret` 和 Server 的 `--secret` 不相符。请确保两端传入的鉴权字符串一模一样，否则 Server 将拒绝回送握手 Ack 并直接通过加密流回绝错误终止请求。
 
 **Q: 日志提示 `Target not allowed`？**
 - 这是出于安全考量。Client 请求将流量映射到的 `target`（如 `--map ...=192.168.1.100:80`），但是该 `target` 不在 Server 启动时传入的 `--allow` 列表里。请将需要的 IP 及端口加入服务端白名单参数中。Server 会回发加密的 `Error` packet 并在 Client 输出警告断言。

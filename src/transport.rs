@@ -31,7 +31,7 @@ impl ConnectionIdGenerator {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionRoute {
     pub peer_addr: SocketAddr,
-    pub target_addr: SocketAddr,
+    pub target_addr: String,
 }
 
 /// Routing table for logical connections
@@ -85,17 +85,15 @@ mod tests {
         let mut table = ConnectionTable::new();
         let id = ConnectionId(42);
         let peer1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-        let target1: SocketAddr = "127.0.0.1:22".parse().unwrap();
         let route1 = ConnectionRoute {
             peer_addr: peer1,
-            target_addr: target1,
+            target_addr: "127.0.0.1:22".to_string(),
         };
 
         let peer2: SocketAddr = "127.0.0.1:9090".parse().unwrap();
-        let target2: SocketAddr = "127.0.0.1:80".parse().unwrap();
         let route2 = ConnectionRoute {
             peer_addr: peer2,
-            target_addr: target2,
+            target_addr: "example.com:80".to_string(),
         };
 
         // Should be empty initially

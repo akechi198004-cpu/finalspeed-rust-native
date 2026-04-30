@@ -1,4 +1,3 @@
-use fspeed_rs::config::PortMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,9 +14,9 @@ async fn find_free_udp_port() -> u16 {
 }
 
 #[tokio::test]
-async fn test_basic_tunnel_loopback() {
+async fn test_socks5_tunnel_loopback() {
     tracing_subscriber::fmt::try_init().ok();
-    // We wrap everything in a timeout to prevent the test from hanging
+
     tokio::time::timeout(Duration::from_secs(5), async {
         // 1. Start echo server
         let echo_port = find_free_tcp_port().await;
@@ -29,7 +28,7 @@ async fn test_basic_tunnel_loopback() {
                 let mut buf = vec![0; 1024];
                 while let Ok(n) = stream.read(&mut buf).await {
                     if n == 0 {
-                        break; // EOF
+                        break;
                     }
                     if stream.write_all(&buf[..n]).await.is_err() {
                         break;
@@ -48,50 +47,56 @@ async fn test_basic_tunnel_loopback() {
                 .unwrap();
         });
 
-        // Give the server a tiny moment to start
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // 3. Start fspeed-rs client
-        let local_port = find_free_tcp_port().await;
-        let map = PortMap {
-            local: format!("127.0.0.1:{}", local_port).parse().unwrap(),
-            target: echo_addr.clone(),
-        };
+        // 3. Start fspeed-rs client with SOCKS5 only
+        let socks5_port = find_free_tcp_port().await;
+        let socks5_addr: SocketAddr = format!("127.0.0.1:{}", socks5_port).parse().unwrap();
 
         let client_task = tokio::spawn(async move {
             fspeed_rs::client::run(
                 server_addr.to_string(),
                 "test123".to_string(),
-                vec![map],
-                None,
+                vec![],
+                Some(socks5_addr),
             )
             .await
             .unwrap();
         });
 
-        // Give the client a tiny moment to bind its TCP listener
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // 4. Connect to local TCP listener
-        let mut client_stream = TcpStream::connect(format!("127.0.0.1:{}", local_port))
+        // 4. Test code mimics a SOCKS5 client
+        let mut client_stream = TcpStream::connect(format!("127.0.0.1:{}", socks5_port))
             .await
             .unwrap();
 
-        // 5. Wait a tiny bit for the OpenConnection to be accepted by the server
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Send greeting: VER 5, 1 method, method 0 (NO AUTH)
+        client_stream.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+        let mut greeting_resp = [0u8; 2];
+        client_stream.read_exact(&mut greeting_resp).await.unwrap();
+        assert_eq!(greeting_resp, [0x05, 0x00]);
 
-        // 6. Write short data
-        let message = b"hello fspeed";
+        // Send Connect request to 127.0.0.1:echo_port
+        let mut req = vec![0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1];
+        req.extend_from_slice(&echo_port.to_be_bytes());
+        client_stream.write_all(&req).await.unwrap();
+
+        // Wait for SOCKS5 response indicating handshake tunnel success
+        let mut connect_resp = [0u8; 10];
+        client_stream.read_exact(&mut connect_resp).await.unwrap();
+        assert_eq!(connect_resp[1], 0x00); // SUCCESS
+
+        // Send payload through tunnel
+        let message = b"hello socks5";
         client_stream.write_all(message).await.unwrap();
 
-        // 7. Read echo response
+        // Read echo returned
         let mut buf = vec![0; message.len()];
         client_stream.read_exact(&mut buf).await.unwrap();
 
-        // 7. Assert response
         assert_eq!(&buf, message);
 
-        // Cleanup: abort tasks so the test finishes cleanly
         echo_task.abort();
         server_task.abort();
         client_task.abort();

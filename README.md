@@ -7,7 +7,8 @@
 - 采用 **client/server 双端转发** 结构，允许客户端通过隧道将本地 TCP 流量映射至远端服务端所指向的目标 TCP 端口。
 - 采用 **自定义可靠协议结构**，专注于轻量化传输。
 - **不兼容** 原始 Java FinalSpeed 协议。
-- **不使用** QUIC 或 SOCKS5。
+- **支持 SOCKS5 代理** 客户端内置可选 SOCKS5 (无鉴权) 服务，支持动态建立隧道代理网络请求。
+- **不使用** QUIC。
 - **不使用** fake-TCP 或基于 pcap 的发包拦截机制。
 
 ---
@@ -60,22 +61,23 @@ cargo run --release -- client --server 127.0.0.1:15000 --secret test123 --map 12
 ssh -p 2222 user@127.0.0.1
 ```
 
-### HTTP 代理映射
-*场景：加速目标服务器的 8080 服务页面。*
+### SOCKS5 动态代理映射
+*场景：将本地所有的代理流量通过隧道安全传输到服务端并动态请求对应互联网资源。*
 
 **Server (服务端运行):**
+*(注意: 提供 SOCKS5 代理往往意味着服务器成为跳板，请在安全可控环境或严格配合 --allow 参数使用)*
 ```bash
-cargo run --release -- server --listen 127.0.0.1:15000 --secret test123 --allow 127.0.0.1:8080
+cargo run --release -- server --listen 0.0.0.0:15000 --secret test123
 ```
 
-**Client (客户端运行):**
+**Client (客户端内建 SOCKS5 监听):**
 ```bash
-cargo run --release -- client --server 127.0.0.1:15000 --secret test123 --map 127.0.0.1:18080=127.0.0.1:8080
+cargo run --release -- client --server SERVER_IP:15000 --secret test123 --socks5 127.0.0.1:1080
 ```
 
-测试连接：
+测试代理连接：
 ```bash
-curl http://127.0.0.1:18080
+curl --socks5-hostname 127.0.0.1:1080 http://example.com
 ```
 
 ---
@@ -90,8 +92,10 @@ curl http://127.0.0.1:18080
 ### Client 参数
 - `--server`: 隧道远程服务端的 UDP 地址和端口。例如 `198.51.100.1:150`。
 - `--secret`: 隧道接入密码。需要与服务端配置匹配。
-- `--map`: 端口映射规则，格式为 `local_addr:local_port=target_addr:target_port`。
-  - 例如 `127.0.0.1:2222=127.0.0.1:22`，表示把本地 TCP 2222 端口的流量隧道加速转发到目标远端服务 22 端口。支持使用逗号传入多条规则映射。
+- `--map`: 静态端口映射规则，格式为 `local_addr:local_port=target_addr:target_port`。
+  - 例如 `127.0.0.1:2222=127.0.0.1:22`，表示把本地 TCP 2222 端口的流量隧道加速转发到目标远端服务 22 端口。支持传入多条规则映射。
+- `--socks5`: 动态代理绑定地址。例如 `127.0.0.1:1080`。支持解析远端 IPv4 及 Domain 域名，SOCKS5 入口仅在客户端有效。
+  - *注意：Client 启动至少需要提供一个 `--map` 或 一个 `--socks5` 监听，两者支持组合同时使用。*
 
 ---
 
@@ -115,7 +119,7 @@ curl http://127.0.0.1:18080
 - 项目采用基于共享 `secret` 配合 `HKDF-SHA256` 派生的密钥机制，使用 `ChaCha20-Poly1305` AEAD 进行 payload 的全程加密。
 - 数据包中的 Header 部分（包括 connection_id 等流信息）目前仍为**明文**传输，仅供内部路由器处理。但是 AEAD 的 AAD 机制确保了明文头部防篡改。
 - 虽然协议实现了包含 Unix timestamp ms 的鉴权原语机制来防备基础重放，但当前代码尚未接入**重放缓存 (replay cache)**、**动态 per-session salt**、**按时密钥轮换 (key rotation)** 以及**流量混淆 (traffic padding)**。所以针对复杂的流量侧写分析（Traffic Analysis）仍存在特征识别风险。
-- ⚠️ **强烈建议**在启动 Server 时明确配置 `--allow` 目标地址白名单，以防服务端被恶意用作全网开放的任意 TCP 转发代理。
+- ⚠️ **强烈建议**在启动 Server 时明确配置 `--allow` 目标地址白名单，以防服务端被恶意用作全网开放的任意 TCP 转发代理。特别是开放客户端 SOCKS5 功能时，服务端的远端路由请求可能不可控。
 
 ---
 
