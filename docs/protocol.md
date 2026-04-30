@@ -48,9 +48,9 @@
 
 - `OpenConnection` (`0x01`): 建立虚拟 UDP 隧道的握手原语，携带关键验证与建立请求体。
 - `Data` (`0x02`): 隧道处于 ESTABLISHED 态后承载真实双向 TCP `Payload` 的数据分组。
-- `Ack` (`0x03`): 纯应答机制包，负责传达控制状态（即将实装，当前处于占位规划）。
+- `Ack` (`0x03`): 用于 `OpenConnection` 完成后的显式握手成功回执响应（未来将并入实际的数据包序列确认重传逻辑）。
 - `Close` (`0x04`): TCP 层触发 `EOF` 后用于清理双端映射路由、主动宣告优雅终止隧道资源释放的分组。
-- `Error` (`0x05`): 指示非标准状态失败响应，如服务端驳回非法连接（当前在底层结构体中作为基础变体）。
+- `Error` (`0x05`): 指示非标准状态失败响应，包含服务端驳回非法连接、目标网络拒绝连接等显式的断言拦截原因（通过加密 Payload 返回 `reason`）。
 
 ## 5. 加密规范与 OpenConnection Payload
 
@@ -87,11 +87,14 @@ timestamp_ms=1682390884000
 ## 8. Connection Lifecycle
 
 简易的数据隧道传输的完整生命周期管理：
-1. **启动与建立:** Client 根据启动指令传递的 `--map` 配置按序随机生成一个唯一 `connection_id` 字典键。
-2. **连接声明:** Client 向目标服务器发送携带目标指向和鉴权的 `OpenConnection` Payload 原语。
-3. **验证与挂载:** Server 对接收到的报文解开 Payload 并依次做 `secret`、`target` 格式验证以及白名单匹配，一切合法后由 Server 记录内部映射路由（将该请求 UDP IP/端口 与 `connection_id` 与目标 TCP 挂钩）。
-4. **透明中转:** 后续交互将仅依据 UDP Header 里的 `connection_id` 标志来进行 `Data` 包双端路由派发映射。
-5. **正常关闭:** 当由于网络或者进程导致任意一端的 TCP socket 发生阻塞报错或触发 `EOF` 半关闭后，触发端发送 `Close` UDP 指令包，双端同步清理维护表中挂载的内存。
+1. **启动与建立:** Client 根据启动指令传递的 `--map` 配置按序随机生成一个唯一 `connection_id` 字典键，挂起本地状态为 `Pending` 态并设定 `5 秒` 等待锁。
+2. **连接声明:** Client 向目标服务器发送携带目标指向和鉴权的加密 `OpenConnection` Payload 原语。
+3. **验证与挂载:** Server 收到该报文解开 Payload 并做鉴权和白名单放行匹配，向真实的后端进行 TCP Dial。
+4. **响应断言 (Handshake):**
+   - 连接成功：Server 生成带有状态声明 `status=ok` 的加密 `Ack` 原语返回 Client。
+   - 遭到拒绝：Server 生成包含具体缘由（如 "Target connect failed"） 的加密 `Error` 包打回给 Client 进行拆除。
+5. **透明中转:** 只有成功接收握手响应 `Ack` 的 Client 才会将当前映射变更为 `Established` 态并解除本地锁定，放行真实流量。后续交互仅依据 UDP Header 里的 `connection_id` 标志来进行 `Data` 包双端路由派发映射。
+6. **正常关闭:** 当由于网络或者进程导致任意一端的 TCP socket 发生阻塞报错或触发 `EOF` 半关闭后，触发端发送 `Close` UDP 指令包，双端同步清理维护表中挂载的内存。
 
 ## 9. 错误处理
 

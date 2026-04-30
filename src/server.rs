@@ -9,9 +9,9 @@ use crate::crypto::{
     build_aad, decrypt_payload, derive_key, encrypt_payload, validate_timestamp_ms,
 };
 use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
-use crate::payload::parse_open_connection_payload;
+use crate::payload::{build_ack_payload, build_error_payload, parse_open_connection_payload};
 use crate::protocol::{decode_packet, encode_packet};
-use crate::session::{ServerSessionManager, SessionHandle};
+use crate::session::{ServerSessionManager, SessionHandle, SessionState};
 use crate::transport::{ConnectionRoute, ConnectionTable};
 
 #[allow(clippy::collapsible_if)]
@@ -143,8 +143,45 @@ pub async fn run(
 
                                             // Register session
                                             session_mgr_clone
-                                                .insert(conn_id, SessionHandle { sender: tx })
+                                                .insert(
+                                                    conn_id,
+                                                    SessionHandle {
+                                                        sender: tx,
+                                                        state: SessionState::Established,
+                                                    },
+                                                )
                                                 .await;
+
+                                            // Send Ack payload
+                                            let key = derive_key(&secret_ref);
+                                            if let Ok(mut ack_packet) = Packet::try_new(
+                                                PacketType::Ack,
+                                                FLAG_ENCRYPTED,
+                                                conn_id,
+                                                0,
+                                                0,
+                                                0,
+                                                Bytes::new(),
+                                            ) {
+                                                let ack_payload = build_ack_payload();
+                                                let aad = build_aad(&ack_packet.header);
+                                                if let Ok(encrypted_ack) = encrypt_payload(
+                                                    ack_payload.as_bytes(),
+                                                    &key,
+                                                    &aad,
+                                                ) {
+                                                    ack_packet.payload = encrypted_ack.clone();
+                                                    ack_packet.header.payload_len =
+                                                        encrypted_ack.len() as u16;
+
+                                                    if let Ok(encoded) = encode_packet(&ack_packet)
+                                                    {
+                                                        let _ = socket_clone
+                                                            .send_to(&encoded, peer)
+                                                            .await;
+                                                    }
+                                                }
+                                            }
 
                                             // Spawn TCP -> UDP reader task
                                             let read_socket = Arc::clone(&socket_clone);
@@ -289,7 +326,37 @@ pub async fn run(
                                                 target_addr,
                                                 e
                                             );
-                                            // Do NOT insert into connection_table
+                                            // Send encrypted Error payload
+                                            let key = derive_key(&secret_ref);
+                                            if let Ok(mut err_packet) = Packet::try_new(
+                                                PacketType::Error,
+                                                FLAG_ENCRYPTED,
+                                                conn_id,
+                                                0,
+                                                0,
+                                                0,
+                                                Bytes::new(),
+                                            ) {
+                                                let err_payload =
+                                                    build_error_payload("Target connect failed");
+                                                let aad = build_aad(&err_packet.header);
+                                                if let Ok(encrypted_err) = encrypt_payload(
+                                                    err_payload.as_bytes(),
+                                                    &key,
+                                                    &aad,
+                                                ) {
+                                                    err_packet.payload = encrypted_err.clone();
+                                                    err_packet.header.payload_len =
+                                                        encrypted_err.len() as u16;
+
+                                                    if let Ok(encoded) = encode_packet(&err_packet)
+                                                    {
+                                                        let _ = socket_clone
+                                                            .send_to(&encoded, peer)
+                                                            .await;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -299,6 +366,31 @@ pub async fn run(
                                         peer,
                                         e
                                     );
+                                    // Send encrypted Error payload
+                                    let key = derive_key(&secret_ref);
+                                    if let Ok(mut err_packet) = Packet::try_new(
+                                        PacketType::Error,
+                                        FLAG_ENCRYPTED,
+                                        conn_id,
+                                        0,
+                                        0,
+                                        0,
+                                        Bytes::new(),
+                                    ) {
+                                        let err_payload = build_error_payload(&e);
+                                        let aad = build_aad(&err_packet.header);
+                                        if let Ok(encrypted_err) =
+                                            encrypt_payload(err_payload.as_bytes(), &key, &aad)
+                                        {
+                                            err_packet.payload = encrypted_err.clone();
+                                            err_packet.header.payload_len =
+                                                encrypted_err.len() as u16;
+
+                                            if let Ok(encoded) = encode_packet(&err_packet) {
+                                                let _ = socket_clone.send_to(&encoded, peer).await;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         });
