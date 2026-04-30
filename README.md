@@ -2,9 +2,9 @@
 
 A Rust-native reliable UDP tunnel for accelerating TCP services.
 
-## Current MVP Status (Phase 4.1)
+## Current MVP Status (Phase 4.2)
 
-This phase implements TCP port mapping endpoint establishment.
+This phase implements a basic session manager and full-duplex TCP <-> UDP Data packet forwarding.
 
 ### What is implemented:
 - Full `tokio`-based async binary skeleton.
@@ -12,15 +12,16 @@ This phase implements TCP port mapping endpoint establishment.
 - Custom Big-Endian binary packet layout for the UDP transport (`magic`, `version`, `packet_type`, `flags`, `connection_id`, `sequence`, `ack`, `window`, `payload_len`).
 - Codec logic for encoding/decoding UDP datagrams with strict error checking.
 - UDP socket transport skeleton is implemented.
-- **Client Session Establishment:** Client binds a `TcpListener` per port mapping and successfully allocates per-connection `ClientSession` structures mapped to standard `OpenConnection` packets over UDP.
-- **Server Session Establishment:** Server parses `OpenConnection` packets, validates the secret and optional allowlist limits, actively initiates connection to target TCP via `TcpStream::connect`, and successfully binds `ServerSession` instances.
-- `ConnectionTable` dynamically tracks UDP endpoints.
-- **Reliability State Machine Basis:** Core structs (sliding windows, send buffers, retransmission queues, cumulative ACKs) are implemented and successfully unit tested.
+- **Session Management:** Built `ClientSessionManager` and `ServerSessionManager` managing lock-free background access to independent connections via internal `mpsc` channels.
+- **Client Session Forwarding:** Client accepts multiple local TCP connections concurrently. Each splits into concurrent Reader/Writer tasks, forwarding raw bytes securely via UDP using monotonically increasing sequence numbers inside `PacketType::Data` datagrams.
+- **Server Session Forwarding:** Server strictly validates endpoint payloads before initiating target TCP connections autonomously. Concurrent target Read/Write tasks are spawned, maintaining duplex traffic back through the dynamic UDP port tracked by `ConnectionTable`.
+- **Connection Teardown:** Handling of EOF/shutdowns propagating through `PacketType::Close` over UDP to cleanup routes on peer components appropriately.
 
 ### What is NOT implemented yet:
-- Reliable runtime loop: Binding the `ServerSession`/`ClientSession` to the UDP stream loops for full end-to-end TCP forwarding.
+- **Full Reliable Runtime:** Basic forwarding transmits packets effectively but does not integrate full retransmission (`SendState` & `ReceiveState`) mechanisms yet.
+- OpenConnection Acknowledgement / Initial Handshake sequence synchronization.
 - QUIC
-- Java wire-compatibility (This project defines a new Rust-native protocol).
+- Java wire-compatibility (This project intentionally defines a custom Rust-native protocol).
 
 ## Build Instructions
 
