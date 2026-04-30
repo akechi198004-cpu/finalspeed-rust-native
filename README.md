@@ -2,7 +2,7 @@
 
 A Rust-native reliable UDP tunnel for accelerating TCP services.
 
-## Current MVP Status (Phase 2)
+## Current MVP Status (Phase 2.1)
 
 This phase establishes the UDP transport skeleton and basic routing based on `docs/rust-design.md`.
 
@@ -13,11 +13,14 @@ This phase establishes the UDP transport skeleton and basic routing based on `do
 - Codec logic for encoding/decoding UDP datagrams with strict error checking.
 - UDP socket transport skeleton is implemented.
 - Client can send `OpenConnection` test packets.
-- Server can receive and decode packets.
+- Server already parses `OpenConnection` temporary payload properly.
+- Server successfully validates the shared secret.
+- Server supports `--allow` target address allowlisting.
+- `ConnectionTable` records both `peer_addr` and `target_addr` for accurate routing.
 
 ### What is NOT implemented yet:
-- TCP port forwarding
-- Reliability (ARQ) mechanisms like retransmission loops or sliding windows
+- Still no TCP port forwarding.
+- Still no reliability (ARQ) mechanisms like retransmission loops or sliding windows.
 - QUIC
 - Java wire-compatibility (This project defines a new Rust-native protocol).
 

@@ -28,9 +28,15 @@ impl ConnectionIdGenerator {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRoute {
+    pub peer_addr: SocketAddr,
+    pub target_addr: SocketAddr,
+}
+
 /// Routing table for logical connections
 pub struct ConnectionTable {
-    routes: HashMap<ConnectionId, SocketAddr>,
+    routes: HashMap<ConnectionId, ConnectionRoute>,
 }
 
 impl Default for ConnectionTable {
@@ -47,17 +53,17 @@ impl ConnectionTable {
     }
 
     /// Insert or update a route
-    pub fn insert(&mut self, id: ConnectionId, addr: SocketAddr) {
-        self.routes.insert(id, addr);
+    pub fn insert(&mut self, id: ConnectionId, route: ConnectionRoute) {
+        self.routes.insert(id, route);
     }
 
     /// Lookup a route by ConnectionId
-    pub fn lookup(&self, id: &ConnectionId) -> Option<SocketAddr> {
-        self.routes.get(id).copied()
+    pub fn lookup(&self, id: &ConnectionId) -> Option<ConnectionRoute> {
+        self.routes.get(id).cloned()
     }
 
     /// Remove a route
-    pub fn remove(&mut self, id: &ConnectionId) -> Option<SocketAddr> {
+    pub fn remove(&mut self, id: &ConnectionId) -> Option<ConnectionRoute> {
         self.routes.remove(id)
     }
 }
@@ -78,23 +84,34 @@ mod tests {
     fn test_connection_table() {
         let mut table = ConnectionTable::new();
         let id = ConnectionId(42);
-        let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-        let addr2: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        let peer1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let target1: SocketAddr = "127.0.0.1:22".parse().unwrap();
+        let route1 = ConnectionRoute {
+            peer_addr: peer1,
+            target_addr: target1,
+        };
+
+        let peer2: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        let target2: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let route2 = ConnectionRoute {
+            peer_addr: peer2,
+            target_addr: target2,
+        };
 
         // Should be empty initially
         assert_eq!(table.lookup(&id), None);
 
         // Insert
-        table.insert(id, addr1);
-        assert_eq!(table.lookup(&id), Some(addr1));
+        table.insert(id, route1.clone());
+        assert_eq!(table.lookup(&id), Some(route1.clone()));
 
         // Update
-        table.insert(id, addr2);
-        assert_eq!(table.lookup(&id), Some(addr2));
+        table.insert(id, route2.clone());
+        assert_eq!(table.lookup(&id), Some(route2.clone()));
 
         // Remove
         let removed = table.remove(&id);
-        assert_eq!(removed, Some(addr2));
+        assert_eq!(removed, Some(route2.clone()));
         assert_eq!(table.lookup(&id), None);
     }
 }
