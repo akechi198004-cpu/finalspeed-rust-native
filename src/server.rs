@@ -1,22 +1,23 @@
 use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::RwLock;
 
 use crate::packet::{Packet, PacketType};
 use crate::payload::parse_open_connection_payload;
 use crate::protocol::decode_packet;
+use crate::session::ServerSession;
 use crate::transport::{ConnectionRoute, ConnectionTable};
 
 #[allow(clippy::collapsible_if)]
-pub fn handle_open_connection_packet(
+pub async fn handle_open_connection_packet(
     packet: &Packet,
     peer_addr: SocketAddr,
     secret: &str,
     allowlist: Option<&[SocketAddr]>,
     connection_table: &mut ConnectionTable,
-) -> Result<(), String> {
+) -> Result<ServerSession, String> {
     let payload = parse_open_connection_payload(&packet.payload).map_err(|e| e.to_string())?;
 
     if payload.secret != secret {
@@ -42,7 +43,7 @@ pub fn handle_open_connection_packet(
         peer_addr,
         target_addr: payload.target,
     };
-    connection_table.insert(packet.header.connection_id, route);
+    connection_table.insert(packet.header.connection_id, route.clone());
 
     tracing::debug!(
         "Updated route for ConnectionId({}) -> peer: {}, target: {}",
@@ -51,7 +52,24 @@ pub fn handle_open_connection_packet(
         payload.target
     );
 
-    Ok(())
+    // Phase 4.1: Attempt to establish TCP connection
+    tracing::info!("Attempting TCP connection to target: {}", payload.target);
+    match TcpStream::connect(payload.target).await {
+        Ok(tcp_stream) => {
+            tracing::info!("Successfully connected to target: {}", payload.target);
+            let session = ServerSession {
+                connection_id: packet.header.connection_id,
+                peer_addr,
+                target_addr: payload.target,
+                target_tcp: tcp_stream,
+            };
+            Ok(session)
+        }
+        Err(e) => {
+            tracing::error!("Failed to connect to target {}: {}", payload.target, e);
+            Err(format!("TCP connection failed: {}", e))
+        }
+    }
 }
 
 #[allow(clippy::collapsible_if)]
@@ -101,10 +119,19 @@ pub async fn run(
                 if packet.header.packet_type == PacketType::OpenConnection {
                     let mut table = connection_table.write().await;
                     let allow_ref = allow.as_deref();
-                    if let Err(e) =
-                        handle_open_connection_packet(&packet, peer, &secret, allow_ref, &mut table)
+                    match handle_open_connection_packet(
+                        &packet, peer, &secret, allow_ref, &mut table,
+                    )
+                    .await
                     {
-                        tracing::warn!("Failed to handle OpenConnection from {}: {}", peer, e);
+                        Ok(_session) => {
+                            tracing::info!("ServerSession created for {}", _session.connection_id);
+                            // Future: start async loops using _session
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to handle OpenConnection from {}: {}", peer, e);
+                            // Future: remove from connection_table and send Error packet
+                        }
                     }
                 }
             }
@@ -137,41 +164,51 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn test_handle_open_connection_success() {
+    #[tokio::test]
+    async fn test_handle_open_connection_success() {
+        // To test success, we need a mock TCP server to connect to
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = listener.local_addr().unwrap();
+
+        let payload_str = format!("secret=test123\ntarget={}", target_addr);
         let mut table = ConnectionTable::new();
-        let packet = create_test_packet("secret=test123\ntarget=192.168.1.1:80");
+        let packet = create_test_packet(&payload_str);
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        let result = handle_open_connection_packet(&packet, peer_addr, "test123", None, &mut table);
+        let result =
+            handle_open_connection_packet(&packet, peer_addr, "test123", None, &mut table).await;
 
         assert!(result.is_ok());
+        let session = result.unwrap();
+        assert_eq!(session.target_addr, target_addr);
+
         let route = table.lookup(&ConnectionId(1)).unwrap();
         assert_eq!(route.peer_addr, peer_addr);
-        assert_eq!(
-            route.target_addr,
-            "192.168.1.1:80".parse::<SocketAddr>().unwrap()
-        );
+        assert_eq!(route.target_addr, target_addr);
     }
 
-    #[test]
-    fn test_handle_open_connection_secret_mismatch() {
+    #[tokio::test]
+    async fn test_handle_open_connection_secret_mismatch() {
         let mut table = ConnectionTable::new();
         let packet = create_test_packet("secret=wrong\ntarget=192.168.1.1:80");
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
-        let result = handle_open_connection_packet(&packet, peer_addr, "test123", None, &mut table);
+        let result =
+            handle_open_connection_packet(&packet, peer_addr, "test123", None, &mut table).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Secret mismatch");
         assert!(table.lookup(&ConnectionId(1)).is_none());
     }
 
-    #[test]
-    fn test_handle_open_connection_allowlist_success() {
+    #[tokio::test]
+    async fn test_handle_open_connection_allowlist_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = listener.local_addr().unwrap();
+
+        let payload_str = format!("secret=test123\ntarget={}", target_addr);
         let mut table = ConnectionTable::new();
-        let target_addr: SocketAddr = "192.168.1.1:80".parse().unwrap();
-        let packet = create_test_packet("secret=test123\ntarget=192.168.1.1:80");
+        let packet = create_test_packet(&payload_str);
         let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
 
         let result = handle_open_connection_packet(
@@ -180,15 +217,16 @@ mod tests {
             "test123",
             Some(&[target_addr]),
             &mut table,
-        );
+        )
+        .await;
 
         assert!(result.is_ok());
         let route = table.lookup(&ConnectionId(1)).unwrap();
         assert_eq!(route.target_addr, target_addr);
     }
 
-    #[test]
-    fn test_handle_open_connection_allowlist_reject() {
+    #[tokio::test]
+    async fn test_handle_open_connection_allowlist_reject() {
         let mut table = ConnectionTable::new();
         let allowed_addr: SocketAddr = "192.168.1.1:80".parse().unwrap();
         // Requesting a different target
@@ -201,7 +239,8 @@ mod tests {
             "test123",
             Some(&[allowed_addr]),
             &mut table,
-        );
+        )
+        .await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Target not allowed");
