@@ -13,7 +13,7 @@ The application is built entirely in Rust, heavily leveraging the `tokio` asynch
     *   Separate async tasks handle individual TCP outgoing streams on the server.
     *   Channels (e.g., `tokio::sync::mpsc`) are used to route packets between the UDP multiplexer and the individual logical connections.
 *   **Observability:** The `tracing` crate is used for logging and diagnostics.
-*   **Security Context:** No full TLS or QUIC implementation. A simple shared-secret mechanism prevents unauthorized usage.
+*   **Security Context:** No full TLS or QUIC implementation. A simple shared-secret mechanism prevents unauthorized usage, and payloads are symmetrically encrypted using `ChaCha20-Poly1305` AEAD with HKDF derived keys.
 
 ## 2. CLI Commands
 
@@ -86,12 +86,12 @@ The wire format uses a custom, explicit binary layout using **Big-Endian** byte 
 | 18 | `window` | 2 | `u16` | Current sliding window size. |
 | 20 | `payload_len`| 2 | `u16` | Length of the payload following the header. |
 
-### Packet Types & Payloads
+### Packet Types & Payloads (Encrypted via AEAD)
 
 *   **OpenConnection (Type 1):**
-    *   `payload`: Contains the fixed-length/padded shared secret hash, followed by the UTF-8 string of the target address (e.g., `127.0.0.1:22`).
+    *   `payload`: Contains a UTF-8 string defining the target address and the creation timestamp (e.g., `target=127.0.0.1:22\ntimestamp_ms=1682390884000`), AES encrypted.
 *   **Data (Type 2):**
-    *   `payload`: Raw byte chunk read from the TCP socket.
+    *   `payload`: Raw byte chunk read from the TCP socket, AES encrypted.
 *   **Ack (Type 3):**
     *   `sequence` field in header acts as the cumulative ACK (acknowledging all packets up to this sequence).
     *   `payload`: (Optional) Can contain a list of `u32` representing Selective ACKs (SACK) for out-of-order packets.
@@ -140,22 +140,27 @@ A connection represents a single proxied TCP stream.
 *   **Auth Failures:** Triggers a specific `Error` packet response and immediate drop.
 *   **TCP Failures:** If the server cannot reach the TargetAddr, it sends an `Error` packet back to the client, causing the client to drop the local TCP connection.
 
-## 13. Minimal MVP Scope
+## 13. Security and Cryptography
+The application uses the `chacha20poly1305` symmetric cipher suite for AEAD encryption over the unverified UDP tunnel.
+*   **Key Derivation:** An `HKDF-SHA256` implementation derives a `32-byte` symmetric AEAD key out of the mutually shared CLI secret flag, appending it with a specific protocol version salt `fspeed-rs-v1`.
+*   **AAD Mapping:** The `Header` of each outgoing Datagram is mapped directly onto the `AAD` parameter space during encryption. This allows the Header to be transmitted in plaintext for immediate packet routing, whilst maintaining cryptographic certainty that it has not been altered in transit.
+*   **Missing Features:** Per-session dynamic salts (negotiated during an initial handshake) and replay-attack cache validations are not yet implemented. Timestamp verification provides only rudimentary prevention.
 
-The Minimum Viable Product will focus strictly on:
+## 14. Minimal MVP Scope
+
+The Minimum Viable Product focuses strictly on:
 1.  Hardcoded or simple static CLI configuration.
 2.  Clear binary packet serialization/deserialization.
-3.  Basic `connection_id` routing over a single UDP socket.
+3.  Basic `connection_id` routing over a single UDP socket with unified Payload AEAD Encryption.
 4.  Phase 3 focuses on basic reliability:
     - Uses cumulative ACK.
     - Temporarily does not support SACK (Selective ACK).
     - Default Retransmission Timeout (RTO) is 500ms.
     - Maximum of 5 retransmissions before failure.
     - Default send window size is 1024 packets.
-5.  Basic shared secret validation.
-6.  Successful proxying of a standard TCP application (like SSH or HTTP) over the Rust UDP tunnel.
+5.  Successful proxying of a standard TCP application (like SSH or HTTP) over the Rust UDP tunnel.
 
-## 14. Implementation Phases
+## 15. Implementation Phases
 
 1.  **Phase 1:** Already implemented CLI, packet codec, basic config, and basic tests.
 2.  **Phase 2:** UDP transport skeleton and basic packet routing.

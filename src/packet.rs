@@ -7,6 +7,8 @@ pub const VERSION: u8 = 1;
 // magic(2) + ver(1) + type(1) + flags(2) + conn(4) + seq(4) + ack(4) + window(2) + len(2)
 pub const HEADER_LEN: usize = 22;
 
+pub const FLAG_ENCRYPTED: u16 = 0x0001;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PacketType {

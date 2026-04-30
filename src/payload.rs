@@ -5,15 +5,15 @@ use crate::error::{FSpeedError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenConnectionRequest {
-    pub secret: String,
     pub target: SocketAddr,
+    pub timestamp_ms: u64,
 }
 
 pub fn parse_open_connection_payload(payload: &[u8]) -> Result<OpenConnectionRequest> {
     let payload_str = str::from_utf8(payload).map_err(|_| FSpeedError::InvalidPayloadFormat)?;
 
-    let mut secret = None;
     let mut target = None;
+    let mut timestamp_ms = None;
 
     for line in payload_str.lines() {
         let line = line.trim();
@@ -30,12 +30,6 @@ pub fn parse_open_connection_payload(payload: &[u8]) -> Result<OpenConnectionReq
         let value = parts[1].trim();
 
         match key {
-            "secret" => {
-                if secret.is_some() {
-                    return Err(FSpeedError::DuplicateKey("secret".to_string()));
-                }
-                secret = Some(value.to_string());
-            }
             "target" => {
                 if target.is_some() {
                     return Err(FSpeedError::DuplicateKey("target".to_string()));
@@ -45,16 +39,29 @@ pub fn parse_open_connection_payload(payload: &[u8]) -> Result<OpenConnectionReq
                     .map_err(|_| FSpeedError::InvalidTargetAddr(value.to_string()))?;
                 target = Some(addr);
             }
+            "timestamp_ms" => {
+                if timestamp_ms.is_some() {
+                    return Err(FSpeedError::DuplicateKey("timestamp_ms".to_string()));
+                }
+                let ts: u64 = value.parse().map_err(|_| FSpeedError::InvalidTimestamp)?;
+                timestamp_ms = Some(ts);
+            }
+            "secret" | "auth" | "nonce" => {
+                return Err(FSpeedError::UnknownKey(key.to_string()));
+            }
             _ => {
                 return Err(FSpeedError::UnknownKey(key.to_string()));
             }
         }
     }
 
-    let secret = secret.ok_or(FSpeedError::MissingSecret)?;
     let target = target.ok_or(FSpeedError::MissingTarget)?;
+    let timestamp_ms = timestamp_ms.ok_or(FSpeedError::InvalidTimestamp)?;
 
-    Ok(OpenConnectionRequest { secret, target })
+    Ok(OpenConnectionRequest {
+        target,
+        timestamp_ms,
+    })
 }
 
 #[cfg(test)]
@@ -63,61 +70,75 @@ mod tests {
 
     #[test]
     fn test_parse_valid_payload() {
-        let payload = b"secret=test123\ntarget=127.0.0.1:22";
+        let payload = b"target=127.0.0.1:22\ntimestamp_ms=1234567890";
         let req = parse_open_connection_payload(payload).unwrap();
-        assert_eq!(req.secret, "test123");
         assert_eq!(req.target, "127.0.0.1:22".parse::<SocketAddr>().unwrap());
+        assert_eq!(req.timestamp_ms, 1234567890);
     }
 
     #[test]
     fn test_parse_valid_payload_reverse_order() {
-        let payload = b"target=192.168.1.1:8080\r\nsecret=my_secret\r\n";
+        let payload = b"timestamp_ms=1234567890\r\ntarget=192.168.1.1:8080\r\n";
         let req = parse_open_connection_payload(payload).unwrap();
-        assert_eq!(req.secret, "my_secret");
         assert_eq!(
             req.target,
             "192.168.1.1:8080".parse::<SocketAddr>().unwrap()
         );
-    }
-
-    #[test]
-    fn test_parse_missing_secret() {
-        let payload = b"target=127.0.0.1:22";
-        let err = parse_open_connection_payload(payload).unwrap_err();
-        assert!(matches!(err, FSpeedError::MissingSecret));
+        assert_eq!(req.timestamp_ms, 1234567890);
     }
 
     #[test]
     fn test_parse_missing_target() {
-        let payload = b"secret=test123";
+        let payload = b"timestamp_ms=1234567890";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::MissingTarget));
     }
 
     #[test]
+    fn test_parse_missing_timestamp() {
+        let payload = b"target=127.0.0.1:22";
+        let err = parse_open_connection_payload(payload).unwrap_err();
+        assert!(matches!(err, FSpeedError::InvalidTimestamp));
+    }
+
+    #[test]
+    fn test_parse_invalid_timestamp() {
+        let payload = b"target=127.0.0.1:22\ntimestamp_ms=not_a_number";
+        let err = parse_open_connection_payload(payload).unwrap_err();
+        assert!(matches!(err, FSpeedError::InvalidTimestamp));
+    }
+
+    #[test]
     fn test_parse_invalid_target() {
-        let payload = b"secret=test123\ntarget=not_an_ip:22";
+        let payload = b"target=not_an_ip:22\ntimestamp_ms=1234567890";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::InvalidTargetAddr(_)));
     }
 
     #[test]
     fn test_parse_duplicate_key() {
-        let payload = b"secret=test123\ntarget=127.0.0.1:22\nsecret=other";
+        let payload = b"target=127.0.0.1:22\ntimestamp_ms=12345\ntarget=192.168.1.1:80";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::DuplicateKey(_)));
     }
 
     #[test]
     fn test_parse_unknown_key() {
-        let payload = b"secret=test123\ntarget=127.0.0.1:22\nfoo=bar";
+        let payload = b"target=127.0.0.1:22\ntimestamp_ms=1234567890\nfoo=bar";
+        let err = parse_open_connection_payload(payload).unwrap_err();
+        assert!(matches!(err, FSpeedError::UnknownKey(_)));
+    }
+
+    #[test]
+    fn test_parse_secret_key_fails() {
+        let payload = b"target=127.0.0.1:22\ntimestamp_ms=1234567890\nsecret=test123";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::UnknownKey(_)));
     }
 
     #[test]
     fn test_parse_invalid_format_no_equals() {
-        let payload = b"secret test123\ntarget=127.0.0.1:22";
+        let payload = b"target 127.0.0.1:22\ntimestamp_ms=1234567890";
         let err = parse_open_connection_payload(payload).unwrap_err();
         assert!(matches!(err, FSpeedError::InvalidPayloadFormat));
     }

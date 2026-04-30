@@ -17,8 +17,9 @@
 目前项目已经完成了基础数据面（basic data plane）转发：
 
 - **基础隧道**：具备完整的 TCP 监听、TCP/UDP 流拆分、UDP 数据封装和连接表的生命周期管理。
-- **控制原语**：实现了 `OpenConnection` Payload 解析、基于 `secret` 的权限验证，以及 `allowlist` 服务端目标白名单限制。
-- **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头。
+- **控制原语**：实现了 `OpenConnection` 解析、针对时间戳的安全验证，以及 `allowlist` 服务端目标白名单限制。
+- **数据加密层**：隧道内部的传输 Payload（包含 OpenConnection 以及后续的 Data/Close TCP Payload）均已通过基于 `HKDF-SHA256` 衍生的 `ChaCha20-Poly1305` AEAD 算法进行对称加密和认证（AAD 包含 Header）。抓包将无法获得明文目标地址和 TCP 内容。
+- **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头及 `FLAG_ENCRYPTED` 安全标志。
 - **自动验证**：具备基于本地 loopback 的自动集成测试和通过 GitHub Actions (Linux x64 / Windows x64) 运行的 CI 工作流。
 - ⚠️ **当前状态警告**：目前项目 **还不是** 生产级别的完整可靠 UDP。虽然代码中已经实现了 `sequence` 序列号等报头基础设计，但发送端/接收端的 ACK 回调、重传机制（retransmission）、以及滑动窗口（sliding window）尚未完整接入真实的数据收发平面（data plane）。
 
@@ -111,11 +112,10 @@ curl http://127.0.0.1:18080
 
 ## 7. 安全说明 (Security Notice)
 
-- 当前协议使用的 shared `secret` 机制仅为轻量级的基础认证防重放标识，**不是高强度的安全模型**。
-- 当前在 UDP 隧道上传递的 Payload **均未进行加密**。
-- ⚠️ **强烈建议**不要在不可信的公网环境下直接用于高敏业务负载的承载。
+- 项目采用基于共享 `secret` 配合 `HKDF-SHA256` 派生的 AES 密钥机制，使用 `ChaCha20-Poly1305` 进行 payload 的全程加密。
+- 数据包中的 Header 部分（包括 connection_id 等流信息）目前仍为**明文**传输，仅供内部路由器处理。但是 AEAD 的 AAD 机制确保了明文头部防篡改。
+- 虽然协议实现了包含 Unix timestamp ms 的鉴权原语机制来防备基础重放，但当前代码尚未接入**重放缓存 (replay cache)**、**动态 per-session salt**、**按时密钥轮换 (key rotation)** 以及**流量混淆 (traffic padding)**。所以针对复杂的流量侧写分析（Traffic Analysis）仍存在特征识别风险。
 - ⚠️ **强烈建议**在启动 Server 时明确配置 `--allow` 目标地址白名单，以防服务端被恶意用作全网开放的任意 TCP 转发代理。
-- 安全扩展计划（如 HMAC 校验、AEAD 负载加密与 Replay Protection）详见 Roadmap 后期阶段。
 
 ---
 
@@ -124,5 +124,4 @@ curl http://127.0.0.1:18080
 - **Phase 5**：将当前的 ACK 确认、数据包重传（Retransmission）与滑动窗口（Sliding Window）实现代码完整对接并应用于真实的数据流平面 (Data Plane)。
 - **Phase 6**：完善更鲁棒和干净的连接关闭（Connection Teardown）流程和 Half-Close 处理。
 - **Phase 7**：引入更加结构化、可复用的持久化外部配置文件系统。
-- **Phase 8**：编写 Bench 性能分析用例，实现拥塞控制算法迭代调优。
-- **Phase 9**：协议层面的全面安全强化机制支持（如 HMAC/TLS 衍生秘钥体系加密）。
+- **Phase 8**：安全协议层增强完善：全面接管 per-session salt / replay cache 防护矩阵。

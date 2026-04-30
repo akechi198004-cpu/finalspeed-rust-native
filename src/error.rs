@@ -43,6 +43,24 @@ pub enum FSpeedError {
 
     #[error("Invalid target address: {0}")]
     InvalidTargetAddr(String),
+
+    #[error("Crypto error: failed to encrypt/decrypt payload")]
+    CryptoError,
+
+    #[error("Decryption failed: authentication tag mismatch or malformed ciphertext")]
+    DecryptFailed,
+
+    #[error("Encrypted payload is too short to contain a nonce")]
+    EncryptedPayloadTooShort,
+
+    #[error("Missing FLAG_ENCRYPTED on payload requiring encryption")]
+    MissingEncryptedFlag,
+
+    #[error("Timestamp expired or drifted too far")]
+    TimestampExpired,
+
+    #[error("Invalid timestamp format")]
+    InvalidTimestamp,
 }
 
 pub type Result<T> = std::result::Result<T, FSpeedError>;
