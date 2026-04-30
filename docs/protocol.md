@@ -13,11 +13,10 @@
 ## 2. 非目标 (Non-Goals)
 
 为了保证实现的聚焦和系统轻巧性，本项目排除了以下方向：
-- **不兼容 Java FinalSpeed**：未对原版本作 Wire-compatibility 支持，不继承其庞杂机制。
+- **不兼容 Java FinalSpeed**：旧明文 Payload 格式已废弃。未对原版本作 Wire-compatibility 支持，不继承其庞杂机制。Rust Client/Server 必须统一版本。
 - **不使用 QUIC**：虽然同样是基于 UDP 的可靠协议，但引入 `quinn` 等三方框架违背了本自研加速协议实验的初衷。
 - **不实现 UDP 应用代理**：当前专职隧道化代理 TCP 层面的负载，不处理应用级 UDP 的封装转发。
 - **不实现 Fake-TCP / Pcap**：坚决摒弃拦截底层网卡伪造链路报文的方式，保证本工具的纯属应用层实现（跨平台高）。
-- **当前没有加密**：此阶段属于加速原型验证期，尚不涵盖 Payload 解密验证相关的加密保护。
 
 ## 3. Packet Header 格式 (Format)
 
@@ -28,7 +27,7 @@
 | 0 | `magic` | 2 bytes | `u16` | 魔数验证字 (Magic Bytes)，必须为固定合法值标识报文 |
 | 2 | `version` | 1 byte | `u8` | 协议版本号，当前版本默认有效字段值为 `0x01` |
 | 3 | `packet_type` | 1 byte | `u8` | 指示该包具体生命周期类型 (枚举：详见后续章节) |
-| 4 | `flags` | 2 bytes | `u16` | 扩展标记位（当前保留为 0x00 或简单位域扩展） |
+| 4 | `flags` | 2 bytes | `u16` | 扩展标记位（当前保留为 `0x0001` 指示 FLAG_ENCRYPTED 安全负载位） |
 | 6 | `connection_id`| 4 bytes | `u32` | 每个隧道会话对应的逻辑链接唯一表示 |
 | 10 | `sequence` | 4 bytes | `u32` | 此报文发送序号（单调递增，供保序和重传比对） |
 | 14 | `ack` | 4 bytes | `u32` | 累计确认序号（累计收到对端的报文数位） |
@@ -53,31 +52,31 @@
 - `Close` (`0x04`): TCP 层触发 `EOF` 后用于清理双端映射路由、主动宣告优雅终止隧道资源释放的分组。
 - `Error` (`0x05`): 指示非标准状态失败响应，如服务端驳回非法连接（当前在底层结构体中作为基础变体）。
 
-## 5. OpenConnection Payload
+## 5. 加密规范与 OpenConnection Payload
 
-对于 `OpenConnection`（建立连接）报文，内部存在特定的明文鉴权 Payload 要求。目前使用的是兼容早期（Phase 2/4）设计的临时 Payload 结构。格式采用行协议。
+从本版本开始，整个网络传输隧道中的 Packet `Payload` 数据层已由明文强制迁移为 **ChaCha20-Poly1305 AEAD** 对密文进行密封传递。Packet `Header` 依然保持明文用于底层路由分发。
 
-**基础示例如下：**
+- 派生安全秘钥（Key Derivation）：协议使用 `HKDF-SHA256` 以及内置的 Salt（`fspeed-rs-v1`）从双端输入的 shared secret 参数上衍生出独立的对称 AES AEAD `32-byte` Key。
+- AAD (Additional Authenticated Data) 防篡改绑定：将传输所附带的包头（即 Magic, Version, Type, Flags, ConnID, Seq, Ack, Window，*但不包含动态 payload_len*）与生成的密文做 AAD 绑定。包头遭劫持篡改将立刻抛出 Decryption Failed 异常。
+
+**全新的加密 Payload 构建设计 (OpenConnection):**
+废除了最初 `secret` 的明文存储（由于密钥已作为 AEAD 环境盐存在）。
 ```
-secret=test123
 target=127.0.0.1:22
+timestamp_ms=1682390884000
 ```
-
-**解析校验与要求:**
-- 采用 **UTF-8** 编码格式传输。
-- 行分割支持 `\n` 或 `\r\n`。
-- Key-Value 字典键的顺序是无须固定的。
-- 如果存在未定义的 key（Unknown key），则服务端触发阻断。
-- 如果同一个 key 被重复定义（Duplicate key），则服务端触发阻断。
-- 服务端会提取 `secret` 值并比对其启动时存储的密钥以完成验证。
-- 服务端会提取 `target` 地址，比对配置开启时的 `--allow` 白名单校验放行权限。
+- **解析校验与要求:**
+  - 提取出 `target` 地址，比对配置开启时的 `--allow` 白名单校验放行权限。
+  - 提取出当前发生发包请求时计算获取的 `timestamp_ms`（自 Unix Epoch 的毫秒计数）。接收端（Server）要求报文的生成与验证间不可逾越正负 300秒 偏差，逾期判为失效 `TimestampExpired`。这有效缓解了基础的 UDP 泛洪或陈旧报文重放。
+  - 强制约束：在数据段若识别到废弃字典例如 `secret`、`auth` 甚至 `nonce` 将直接抛出 `UnknownKey` 解析断言失败。
 
 ## 6. Data Packet
 
-**当前 Phase 4 基础数据面状态下的工作方式：**
-- `Data` 类型包确实正有效地承载被拆分的 TCP payload。
-- 报文中诸如 `sequence`、`ack`、`window` 等控制字段的写入流程确实已在代码层进行了映射与装载。
-- **重要提醒**：当前的可靠传输基础运行时（Reliable Runtime）**尚未真正耦合介入**真实的 Data Plane 操作流程。目前数据发送仍然为快速单调发包循环。
+**当前加密形态下的数据面（Data Plane）投递工作方式：**
+- 当 Client 收口本地 TCP Byte 报文时，直接将其作为 Payload，并借助本地生成的 12 bytes 随机 `nonce` 前缀生成随机化 AEAD 密文包裹。
+- 随后将 Packet 的 `flags` 设置为 `FLAG_ENCRYPTED = 0x0001` 发送给 Server 端验证。
+- 接收端剥离并检查 Header Flag 正确后，提取前置 `nonce` 再配合本地同调衍生完成的 Key，剥开隧道恢复原生 `TCP Byte` 向本地写信道输送。
+- **重要提醒**：尽管 `Data` 有效承载了密文层级的验证并包含 `sequence` 序列号等报头基础设计，当前的可靠传输基础运行时（Reliable Runtime）**尚未真正耦合介入**。网络发送仍属于基础的数据循环。
 
 ## 7. Ack / Retransmission / Window 当前状态
 
@@ -108,10 +107,10 @@ target=127.0.0.1:22
 
 ## 10. 未来协议增强 (Future Protocol Enhancements)
 
-此版本为加速方案的基础底座实现阶段，未来拟开展以下扩展维度：
-- **HMAC Authentication**: 全局替换基础明文的 Secret。
-- **Encryption**: 实装对称隧道加密模型体系以保证负载传输层不可见。
-- **Replay Protection**: 接入强防御体系防止抓包回放攻击导致 Server 瘫痪或误建。
+此版本虽然实装了 AEAD Payload 封装防特征分析功能，但仍处于加速方案的安全底座初期实现阶段。未来拟开展以下扩展维度：
+- **Per-Session Salt & Key Rotation**: 当前的 AEAD 的加密基底 Key 仍由固定 Salt（即 `fspeed-rs-v1`）衍生。未来当集成 Initial Handshake 流程后，会由随机生成协商来驱动每个会话盐 (Salt) 分裂甚至动态重转密钥。
+- **Replay Cache**: 目前对陈旧重放仅依赖正负 300 秒时间戳的验证。下一步将全面建立动态高速拦截的 Replay Cache。
+- **Traffic Padding**: 加入混淆无规则随机数据的 Padding 处理层，规避包体积序列被特征分析侧写。
 - **SACK (Selective Acknowledgment)**: 提供对于高丢包弱网跨网段环境更优的选择重传，优化队列占用。
 - **Adaptive RTO**: 将超时重发延迟从常量固定值升级为通过网络抖动计算估量。
 - **Congestion Control**: 标准的拥塞控制避碰和控制避免网络雪崩。

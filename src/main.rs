@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod crypto;
 pub mod error;
 pub mod packet;
 pub mod payload;
