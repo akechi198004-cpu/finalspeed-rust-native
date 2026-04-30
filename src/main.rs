@@ -6,6 +6,7 @@ pub mod packet;
 pub mod protocol;
 pub mod server;
 pub mod session;
+pub mod transport;
 
 use clap::Parser;
 use cli::{Cli, Commands};

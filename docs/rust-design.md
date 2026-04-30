@@ -152,9 +152,7 @@ The Minimum Viable Product will focus strictly on:
 
 ## 14. Implementation Phases
 
-1.  **Phase 1: Project Setup & Codec:** Initialize the Cargo workspace. Implement the binary packet layout (`encode`/`decode` traits) and comprehensive unit tests for serialization.
-2.  **Phase 2: Core Transport & Routing:** Implement the UDP socket multiplexer. Create the connection table and routing logic to pass packets to specific connection channels.
-3.  **Phase 3: Connection Lifecycle:** Implement the `OpenConnection`, `Close`, and basic authentication flows.
-4.  **Phase 4: Reliability (ARQ):** Implement sequence numbering, the sender table, ACK processing, and the retransmission timer.
-5.  **Phase 5: CLI & TCP Integration:** Add the `clap` CLI parser. Tie the reliable UDP logical connections to physical `tokio::net::TcpStream` sockets.
-6.  **Phase 6: Tuning:** Implement sliding windows, SACKs, dynamic RTO calculation, and rate limiting.
+1.  **Phase 1:** Already implemented CLI, packet codec, basic config, and basic tests.
+2.  **Phase 2:** UDP transport skeleton and basic packet routing.
+3.  **Phase 3:** ACK / retransmission / sliding window runtime.
+4.  **Phase 4:** TCP port mapping.
