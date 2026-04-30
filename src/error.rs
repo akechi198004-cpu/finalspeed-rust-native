@@ -25,6 +25,24 @@ pub enum FSpeedError {
 
     #[error("Payload too large: exceeds maximum allowed size for u16")]
     PayloadTooLarge,
+
+    #[error("Invalid payload format")]
+    InvalidPayloadFormat,
+
+    #[error("Missing secret in payload")]
+    MissingSecret,
+
+    #[error("Missing target in payload")]
+    MissingTarget,
+
+    #[error("Unknown key in payload: {0}")]
+    UnknownKey(String),
+
+    #[error("Duplicate key in payload: {0}")]
+    DuplicateKey(String),
+
+    #[error("Invalid target address: {0}")]
+    InvalidTargetAddr(String),
 }
 
 pub type Result<T> = std::result::Result<T, FSpeedError>;
