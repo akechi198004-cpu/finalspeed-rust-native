@@ -26,7 +26,6 @@ This phase establishes the foundational project structure, the custom binary pac
 ## Build Instructions
 
 ```bash
-cd fspeed-rs
 cargo build
 cargo test
 ```
