@@ -3,8 +3,9 @@ use crate::crypto::{
     build_aad, current_timestamp_ms, decrypt_payload, derive_key, encrypt_payload,
 };
 use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
+use crate::payload::parse_error_payload;
 use crate::protocol::{decode_packet, encode_packet};
-use crate::session::{ClientSessionManager, SessionHandle};
+use crate::session::{ClientSessionManager, SessionHandle, SessionState};
 use crate::transport::ConnectionIdGenerator;
 
 use bytes::{Bytes, BytesMut};
@@ -87,6 +88,68 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
                                                 );
                                             }
                                         }
+                                    });
+                                }
+                                PacketType::Ack => {
+                                    if packet.header.flags & FLAG_ENCRYPTED == 0 {
+                                        tracing::warn!(
+                                            "Ack packet missing FLAG_ENCRYPTED, dropping"
+                                        );
+                                        continue;
+                                    }
+                                    let payload = packet.payload.clone();
+                                    let session_mgr = session_mgr_recv.clone();
+                                    let read_key = derive_key(&secret_recv_clone);
+                                    let aad = build_aad(&packet.header);
+
+                                    tokio::spawn(async move {
+                                        if let Err(e) = decrypt_payload(&payload, &read_key, &aad) {
+                                            tracing::warn!("Failed to decrypt Ack payload: {}", e);
+                                            return;
+                                        }
+                                        tracing::info!(
+                                            "Received Ack packet for ConnectionId: {}",
+                                            conn_id
+                                        );
+                                        session_mgr.complete_handshake(&conn_id, true).await;
+                                    });
+                                }
+                                PacketType::Error => {
+                                    if packet.header.flags & FLAG_ENCRYPTED == 0 {
+                                        tracing::warn!(
+                                            "Error packet missing FLAG_ENCRYPTED, dropping"
+                                        );
+                                        continue;
+                                    }
+                                    let payload = packet.payload.clone();
+                                    let session_mgr = session_mgr_recv.clone();
+                                    let read_key = derive_key(&secret_recv_clone);
+                                    let aad = build_aad(&packet.header);
+
+                                    tokio::spawn(async move {
+                                        match decrypt_payload(&payload, &read_key, &aad) {
+                                            Ok(plaintext) => {
+                                                let reason = if let Ok(error_response) =
+                                                    parse_error_payload(&plaintext)
+                                                {
+                                                    error_response.reason
+                                                } else {
+                                                    "unknown".to_string()
+                                                };
+                                                tracing::warn!(
+                                                    "Received Error packet for ConnectionId: {} with reason: {}",
+                                                    conn_id,
+                                                    reason
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Failed to decrypt Error payload: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                        session_mgr.complete_handshake(&conn_id, false).await;
                                     });
                                 }
                                 PacketType::Close => {
@@ -209,13 +272,69 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
                                                         tcp_stream.into_split();
                                                     let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
 
-                                                    // Register session
+                                                    let (hs_tx, hs_rx) =
+                                                        tokio::sync::oneshot::channel();
+
+                                                    // Register session as Pending
                                                     session_mgr_clone
-                                                        .insert(
+                                                        .insert_pending(
                                                             conn_id,
-                                                            SessionHandle { sender: tx },
+                                                            SessionHandle {
+                                                                sender: tx,
+                                                                state: SessionState::Pending,
+                                                            },
+                                                            hs_tx,
                                                         )
                                                         .await;
+
+                                                    // Wait for handshake with a 5-second timeout
+                                                    let handshake_result = tokio::time::timeout(
+                                                        std::time::Duration::from_secs(5),
+                                                        hs_rx,
+                                                    )
+                                                    .await;
+
+                                                    match handshake_result {
+                                                        Ok(Ok(true)) => {
+                                                            tracing::info!(
+                                                                "Handshake successful for ConnectionId: {}",
+                                                                conn_id
+                                                            );
+                                                            session_mgr_clone
+                                                                .establish(&conn_id)
+                                                                .await;
+                                                        }
+                                                        Ok(Ok(false)) => {
+                                                            tracing::warn!(
+                                                                "Handshake failed (Error packet) for ConnectionId: {}",
+                                                                conn_id
+                                                            );
+                                                            session_mgr_clone
+                                                                .remove(&conn_id)
+                                                                .await;
+                                                            return;
+                                                        }
+                                                        Ok(Err(_)) => {
+                                                            tracing::warn!(
+                                                                "Handshake channel dropped for ConnectionId: {}",
+                                                                conn_id
+                                                            );
+                                                            session_mgr_clone
+                                                                .remove(&conn_id)
+                                                                .await;
+                                                            return;
+                                                        }
+                                                        Err(_) => {
+                                                            tracing::warn!(
+                                                                "Handshake timeout for ConnectionId: {}",
+                                                                conn_id
+                                                            );
+                                                            session_mgr_clone
+                                                                .remove(&conn_id)
+                                                                .await;
+                                                            return;
+                                                        }
+                                                    }
 
                                                     // Spawn Local TCP -> UDP reader task
                                                     let read_socket = Arc::clone(&socket_clone);
@@ -227,8 +346,6 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
                                                         let mut seq: u32 = 0; // TODO: integrate SendState::next_seq()
                                                         let read_key =
                                                             derive_key(&read_secret_clone);
-                                                        // TODO: Wait for Server response / OpenConnectionAccepted or Handshake
-                                                        //       before sending data. Phase 4.2 currently just sends immediately.
                                                         loop {
                                                             match read_half.read(&mut tcp_buf).await
                                                             {

@@ -14,18 +14,31 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    Pending,
+    Established,
+}
 
 /// Handle to a logical session, used to send data to the TCP writer task.
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     pub sender: mpsc::Sender<Bytes>,
+    pub state: SessionState,
+}
+
+/// Used during connection establishment to await Ack/Error Handshakes
+pub struct HandshakeNotifier {
+    pub tx: oneshot::Sender<bool>,
 }
 
 /// Manages client-side sessions.
 #[derive(Debug, Clone)]
 pub struct ClientSessionManager {
     sessions: Arc<RwLock<HashMap<ConnectionId, SessionHandle>>>,
+    handshakes: Arc<RwLock<HashMap<ConnectionId, oneshot::Sender<bool>>>>,
 }
 
 impl Default for ClientSessionManager {
@@ -38,13 +51,39 @@ impl ClientSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            handshakes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn insert(&self, id: ConnectionId, handle: SessionHandle) {
+    pub async fn insert_pending(
+        &self,
+        id: ConnectionId,
+        handle: SessionHandle,
+        handshake_tx: oneshot::Sender<bool>,
+    ) {
+        {
+            let mut map = self.sessions.write().await;
+            map.insert(id, handle);
+        }
+        {
+            let mut hs_map = self.handshakes.write().await;
+            hs_map.insert(id, handshake_tx);
+        }
+        tracing::debug!("ClientSessionManager inserted pending connection: {}", id);
+    }
+
+    pub async fn establish(&self, id: &ConnectionId) {
         let mut map = self.sessions.write().await;
-        map.insert(id, handle);
-        tracing::debug!("ClientSessionManager inserted connection: {}", id);
+        if let Some(handle) = map.get_mut(id) {
+            handle.state = SessionState::Established;
+        }
+    }
+
+    pub async fn complete_handshake(&self, id: &ConnectionId, success: bool) {
+        let mut hs_map = self.handshakes.write().await;
+        if let Some(tx) = hs_map.remove(id) {
+            let _ = tx.send(success);
+        }
     }
 
     pub async fn lookup(&self, id: &ConnectionId) -> Option<SessionHandle> {
@@ -53,6 +92,10 @@ impl ClientSessionManager {
     }
 
     pub async fn remove(&self, id: &ConnectionId) -> Option<SessionHandle> {
+        {
+            let mut hs_map = self.handshakes.write().await;
+            hs_map.remove(id);
+        }
         let mut map = self.sessions.write().await;
         let handle = map.remove(id);
         if handle.is_some() {
@@ -131,13 +174,26 @@ mod tests {
     async fn test_client_session_manager() {
         let manager = ClientSessionManager::new();
         let (tx, _) = mpsc::channel(1);
+        let (hs_tx, hs_rx) = oneshot::channel();
         let id = ConnectionId(1);
-        let handle = SessionHandle { sender: tx };
+        let handle = SessionHandle {
+            sender: tx,
+            state: SessionState::Pending,
+        };
 
-        manager.insert(id, handle.clone()).await;
+        manager.insert_pending(id, handle.clone(), hs_tx).await;
 
         let lookup = manager.lookup(&id).await;
         assert!(lookup.is_some());
+        assert_eq!(lookup.unwrap().state, SessionState::Pending);
+
+        manager.establish(&id).await;
+        let lookup2 = manager.lookup(&id).await;
+        assert_eq!(lookup2.unwrap().state, SessionState::Established);
+
+        manager.complete_handshake(&id, true).await;
+        let success = hs_rx.await.unwrap();
+        assert!(success);
 
         let remove = manager.remove(&id).await;
         assert!(remove.is_some());
@@ -151,7 +207,10 @@ mod tests {
         let manager = ServerSessionManager::new();
         let (tx, _) = mpsc::channel(1);
         let id = ConnectionId(2);
-        let handle = SessionHandle { sender: tx };
+        let handle = SessionHandle {
+            sender: tx,
+            state: SessionState::Established,
+        };
 
         manager.insert(id, handle.clone()).await;
 

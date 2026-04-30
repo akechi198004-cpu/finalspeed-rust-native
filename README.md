@@ -17,8 +17,8 @@
 目前项目已经完成了基础数据面（basic data plane）转发：
 
 - **基础隧道**：具备完整的 TCP 监听、TCP/UDP 流拆分、UDP 数据封装和连接表的生命周期管理。
-- **控制原语**：实现了 `OpenConnection` 解析、针对时间戳的安全验证，以及 `allowlist` 服务端目标白名单限制。
-- **数据加密层**：隧道内部的传输 Payload（包含 OpenConnection 以及后续的 Data/Close TCP Payload）均已通过基于 `HKDF-SHA256` 衍生的 `ChaCha20-Poly1305` AEAD 算法进行对称加密和认证（AAD 包含 Header）。抓包将无法获得明文目标地址和 TCP 内容。
+- **控制原语**：实现了 `OpenConnection` 带有显式握手的双端握手机制解析。支持针对时间戳的安全验证、`allowlist` 服务端目标白名单限制，并具备对端同步回传加密的 Ack/Error 同步机制以阻塞 Client 不发送无用 Data。这为后续支持 SOCKS5 CONNECT 的双向结果传导奠定了基础。
+- **数据加密层**：隧道内部的所有 Payload（包含 OpenConnection、Data、Ack、Error、Close）均已通过基于 `HKDF-SHA256` 衍生的 `ChaCha20-Poly1305` AEAD 算法进行对称加密和认证（AAD 包含 Header）。抓包将无法获得明文目标地址、响应状态以及被承载的 TCP 内容。
 - **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头及 `FLAG_ENCRYPTED` 安全标志。
 - **自动验证**：具备基于本地 loopback 的自动集成测试和通过 GitHub Actions (Linux x64 / Windows x64) 运行的 CI 工作流。
 - ⚠️ **当前状态警告**：目前项目 **还不是** 生产级别的完整可靠 UDP。虽然代码中已经实现了 `sequence` 序列号等报头基础设计，但发送端/接收端的 ACK 回调、重传机制（retransmission）、以及滑动窗口（sliding window）尚未完整接入真实的数据收发平面（data plane）。
@@ -112,7 +112,7 @@ curl http://127.0.0.1:18080
 
 ## 7. 安全说明 (Security Notice)
 
-- 项目采用基于共享 `secret` 配合 `HKDF-SHA256` 派生的 AES 密钥机制，使用 `ChaCha20-Poly1305` 进行 payload 的全程加密。
+- 项目采用基于共享 `secret` 配合 `HKDF-SHA256` 派生的密钥机制，使用 `ChaCha20-Poly1305` AEAD 进行 payload 的全程加密。
 - 数据包中的 Header 部分（包括 connection_id 等流信息）目前仍为**明文**传输，仅供内部路由器处理。但是 AEAD 的 AAD 机制确保了明文头部防篡改。
 - 虽然协议实现了包含 Unix timestamp ms 的鉴权原语机制来防备基础重放，但当前代码尚未接入**重放缓存 (replay cache)**、**动态 per-session salt**、**按时密钥轮换 (key rotation)** 以及**流量混淆 (traffic padding)**。所以针对复杂的流量侧写分析（Traffic Analysis）仍存在特征识别风险。
 - ⚠️ **强烈建议**在启动 Server 时明确配置 `--allow` 目标地址白名单，以防服务端被恶意用作全网开放的任意 TCP 转发代理。
