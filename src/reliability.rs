@@ -24,6 +24,7 @@ pub struct SentPacket {
     pub retransmit_count: u32,
 }
 
+#[derive(Debug)]
 pub struct SendState {
     pub next_sequence: u32,
     pub unacked: BTreeMap<u32, SentPacket>,
@@ -103,6 +104,7 @@ impl SendState {
     }
 }
 
+#[derive(Debug)]
 pub struct ReceiveState {
     pub next_expected: u32,
     pub out_of_order: BTreeMap<u32, Bytes>,
@@ -325,5 +327,39 @@ mod tests {
 
         state = ConnectionState::Failed;
         assert_eq!(state, ConnectionState::Failed);
+    }
+
+    #[test]
+    fn test_receive_state_out_of_order_missing_gap() {
+        let mut rx_state = ReceiveState::new(1024);
+
+        // Sequence 1 is lost, receive 2 and 3
+        let p2 = rx_state.receive_packet(2, Bytes::from("B"));
+        assert!(p2.is_empty());
+        let p3 = rx_state.receive_packet(3, Bytes::from("C"));
+        assert!(p3.is_empty());
+
+        assert_eq!(rx_state.generate_ack(), 0); // Still expecting 1
+
+        // Receive 4
+        let p4 = rx_state.receive_packet(4, Bytes::from("D"));
+        assert!(p4.is_empty());
+
+        // Gap is filled with 1
+        let p1 = rx_state.receive_packet(1, Bytes::from("A"));
+
+        // Should deliver 1, 2, 3, 4 sequentially
+        assert_eq!(p1.len(), 4);
+        assert_eq!(p1[0], Bytes::from("A"));
+        assert_eq!(p1[1], Bytes::from("B"));
+        assert_eq!(p1[2], Bytes::from("C"));
+        assert_eq!(p1[3], Bytes::from("D"));
+
+        assert_eq!(rx_state.generate_ack(), 4);
+
+        // Sequence 6 arrives
+        let p6 = rx_state.receive_packet(6, Bytes::from("F"));
+        assert!(p6.is_empty());
+        assert_eq!(rx_state.generate_ack(), 4);
     }
 }

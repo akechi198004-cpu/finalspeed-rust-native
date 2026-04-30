@@ -22,7 +22,7 @@
 - **数据加密层**：隧道内部的所有 Payload（包含 OpenConnection、Data、Ack、Error、Close）均已通过基于 `HKDF-SHA256` 衍生的 `ChaCha20-Poly1305` AEAD 算法进行对称加密和认证（AAD 包含 Header）。抓包将无法获得明文目标地址、响应状态以及被承载的 TCP 内容。
 - **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头及 `FLAG_ENCRYPTED` 安全标志。
 - **自动验证**：具备基于本地 loopback 的自动集成测试和通过 GitHub Actions (Linux x64 / Windows x64) 运行的 CI 工作流。
-- ⚠️ **当前状态警告**：目前项目 **还不是** 生产级别的完整可靠 UDP。虽然代码中已经实现了 `sequence` 序列号等报头基础设计，但发送端/接收端的 ACK 回调、重传机制（retransmission）、以及滑动窗口（sliding window）尚未完整接入真实的数据收发平面（data plane）。
+- ⚠️ **当前状态警告**：目前项目已将基础的滑动窗口（Sliding Window）、累计确认（Cumulative Ack）、重传列队（Retransmission）**完整接入**真实的 Data Plane 收发平面。在弱网环境下已具备基本的丢包容忍与乱序重排能力。但需要注意的是，**本协议仍处在实验阶段**，**暂不支持** 高级拥塞控制（Congestion Control）、自适应超时计算（Adaptive RTO）及选择性确认（SACK），在极端环境下可能引发阻塞堆积。**因此依旧不建议应用于任何重资产的生产环境中。**
 
 ---
 

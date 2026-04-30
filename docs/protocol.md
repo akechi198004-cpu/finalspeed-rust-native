@@ -76,13 +76,15 @@ timestamp_ms=1682390884000
 - 当 Client 收口本地 TCP Byte 报文时，直接将其作为 Payload，并借助本地生成的 12 bytes 随机 `nonce` 前缀生成随机化 AEAD 密文包裹。
 - 随后将 Packet 的 `flags` 设置为 `FLAG_ENCRYPTED = 0x0001` 发送给 Server 端验证。
 - 接收端剥离并检查 Header Flag 正确后，提取前置 `nonce` 再配合本地同调衍生完成的 Key，剥开隧道恢复原生 `TCP Byte` 向本地写信道输送。
-- **重要提醒**：尽管 `Data` 有效承载了密文层级的验证并包含 `sequence` 序列号等报头基础设计，当前的可靠传输基础运行时（Reliable Runtime）**尚未真正耦合介入**。网络发送仍属于基础的数据循环。
+- **重要提醒**：`Data` 报文已接入了基于 sequence 的 SendState 与 ReceiveState 基础可靠传输引擎。发送数据受滑动窗口约束，接收侧确保包的按序交付与排重缓存。
 
 ## 7. Ack / Retransmission / Window 当前状态
 
-项目内部文件（如 `src/reliability.rs`）虽实现了滑动控制流框架体系：
-- 存在被独立测试验证过的 `SendState` 和 `ReceiveState` 状态机。它们被设计用来支持 ARQ RTO（重传超时测算）处理、失序丢包缓存及 Duplicate-Drop（重复丢弃）判定。
-- **但截止当前版本**，这套可靠网络状态机**没有**对接/融合到实际的 `UDP -> TCP` 接收管道与 `TCP -> UDP` 写入循环当中。相关核心重传逻辑仍归于未来的开发阶段（Future Work）。在此声明旨在杜绝对当前实际投产的性能容错率产生夸大的误解。
+项目内部（`src/reliability.rs` 等）已全面实现了滑动控制流与 ARQ 重传机制，并且已**完整耦合接入**了 Data plane：
+- **累计确认 (Cumulative Ack)**: 每收到一个合法 Data 分组将立即回复 Ack 告知对端已交付的最大连续序列。发送端以此来推进发送窗口并从缓存移除已确认报文。
+- **重传列队 (Retransmission)**: 每个 Session 生命周期内均维系一个定时任务。对超过默认 RTO (500ms) 仍未得到确认的数据包发起重传。超过最大重传阈值后将强行撕裂会话抛出 Failed 状态。
+- **滑动窗口 (Sliding Window)**: 基于 packet-count (默认 1024) 约束了本地 TCP 信道读取与 UDP 投递的无节制扩张，保障了队列健康。
+- **非目标机制**: 当前协议版本**暂时不支持** SACK (Selective Acknowledgment)、Adaptive RTO 及高级拥塞控制算法。在某些特殊极高丢包和抖动的网络场景下仍会触发简单粗暴的 RTO 重传和窗口重置，不建议在严苛商业生产环境中使用。
 
 ## 8. Connection Lifecycle
 
