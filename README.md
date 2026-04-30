@@ -2,9 +2,9 @@
 
 A Rust-native reliable UDP tunnel for accelerating TCP services.
 
-## Current MVP Status (Phase 2.1)
+## Current MVP Status (Phase 3)
 
-This phase establishes the UDP transport skeleton and basic routing based on `docs/rust-design.md`.
+This phase implements the reliability runtime primitives based on `docs/rust-design.md`.
 
 ### What is implemented:
 - Full `tokio`-based async binary skeleton.
@@ -17,10 +17,11 @@ This phase establishes the UDP transport skeleton and basic routing based on `do
 - Server successfully validates the shared secret.
 - Server supports `--allow` target address allowlisting.
 - `ConnectionTable` records both `peer_addr` and `target_addr` for accurate routing.
+- **Reliability State Machine Basis**: implemented core structs and state transitions for sliding windows, send buffers, receive buffers (out-of-order handling), retransmission queues, and cumulative ACKs. Unit tests are provided for all these pieces.
 
 ### What is NOT implemented yet:
 - Still no TCP port forwarding.
-- Still no reliability (ARQ) mechanisms like retransmission loops or sliding windows.
+- Still no end-to-end tunnel tying the UDP packets to real TCP streams.
 - QUIC
 - Java wire-compatibility (This project defines a new Rust-native protocol).
 
