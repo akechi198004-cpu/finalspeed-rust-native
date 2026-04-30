@@ -146,7 +146,12 @@ The Minimum Viable Product will focus strictly on:
 1.  Hardcoded or simple static CLI configuration.
 2.  Clear binary packet serialization/deserialization.
 3.  Basic `connection_id` routing over a single UDP socket.
-4.  Simple Stop-and-Wait or small fixed-size sliding window without complex SACK (retransmit un-ACKed packets after a fixed timeout).
+4.  Phase 3 focuses on basic reliability:
+    - Uses cumulative ACK.
+    - Temporarily does not support SACK (Selective ACK).
+    - Default Retransmission Timeout (RTO) is 500ms.
+    - Maximum of 5 retransmissions before failure.
+    - Default send window size is 1024 packets.
 5.  Basic shared secret validation.
 6.  Successful proxying of a standard TCP application (like SSH or HTTP) over the Rust UDP tunnel.
 
