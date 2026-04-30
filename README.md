@@ -2,9 +2,9 @@
 
 A Rust-native reliable UDP tunnel for accelerating TCP services.
 
-## Current MVP Status (Phase 3)
+## Current MVP Status (Phase 4.1)
 
-This phase implements the reliability runtime primitives based on `docs/rust-design.md`.
+This phase implements TCP port mapping endpoint establishment.
 
 ### What is implemented:
 - Full `tokio`-based async binary skeleton.
@@ -12,16 +12,13 @@ This phase implements the reliability runtime primitives based on `docs/rust-des
 - Custom Big-Endian binary packet layout for the UDP transport (`magic`, `version`, `packet_type`, `flags`, `connection_id`, `sequence`, `ack`, `window`, `payload_len`).
 - Codec logic for encoding/decoding UDP datagrams with strict error checking.
 - UDP socket transport skeleton is implemented.
-- Client can send `OpenConnection` test packets.
-- Server already parses `OpenConnection` temporary payload properly.
-- Server successfully validates the shared secret.
-- Server supports `--allow` target address allowlisting.
-- `ConnectionTable` records both `peer_addr` and `target_addr` for accurate routing.
-- **Reliability State Machine Basis**: implemented core structs and state transitions for sliding windows, send buffers, receive buffers (out-of-order handling), retransmission queues, and cumulative ACKs. Unit tests are provided for all these pieces.
+- **Client Session Establishment:** Client binds a `TcpListener` per port mapping and successfully allocates per-connection `ClientSession` structures mapped to standard `OpenConnection` packets over UDP.
+- **Server Session Establishment:** Server parses `OpenConnection` packets, validates the secret and optional allowlist limits, actively initiates connection to target TCP via `TcpStream::connect`, and successfully binds `ServerSession` instances.
+- `ConnectionTable` dynamically tracks UDP endpoints.
+- **Reliability State Machine Basis:** Core structs (sliding windows, send buffers, retransmission queues, cumulative ACKs) are implemented and successfully unit tested.
 
 ### What is NOT implemented yet:
-- Still no TCP port forwarding.
-- Still no end-to-end tunnel tying the UDP packets to real TCP streams.
+- Reliable runtime loop: Binding the `ServerSession`/`ClientSession` to the UDP stream loops for full end-to-end TCP forwarding.
 - QUIC
 - Java wire-compatibility (This project defines a new Rust-native protocol).
 

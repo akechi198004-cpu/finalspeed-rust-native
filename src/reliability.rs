@@ -82,13 +82,18 @@ impl SendState {
         }
     }
 
-    pub fn get_timed_out_packets(&mut self, now: Instant) -> Result<Vec<Packet>, crate::error::FSpeedError> {
+    pub fn get_timed_out_packets(
+        &mut self,
+        now: Instant,
+    ) -> Result<Vec<Packet>, crate::error::FSpeedError> {
         let mut to_retransmit = Vec::new();
         for (_, sent_packet) in self.unacked.iter_mut() {
             if now.duration_since(sent_packet.sent_at) >= DEFAULT_RTO {
                 sent_packet.retransmit_count += 1;
                 if sent_packet.retransmit_count > MAX_RETRANSMIT_COUNT {
-                    return Err(crate::error::FSpeedError::Decode("Max retransmissions exceeded".to_string()));
+                    return Err(crate::error::FSpeedError::Decode(
+                        "Max retransmissions exceeded".to_string(),
+                    ));
                 }
                 sent_packet.sent_at = now; // reset timer
                 to_retransmit.push(sent_packet.packet.clone());
