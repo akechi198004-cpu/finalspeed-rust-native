@@ -25,10 +25,21 @@ This phase implements a basic session manager and full-duplex TCP <-> UDP Data p
 
 ## Build Instructions
 
+### 本地检查命令 (Local Checks)
+
 ```bash
-cargo build
+cargo fmt --check
+cargo clippy -- -D warnings
 cargo test
+cargo build --release
 ```
+
+### GitHub Actions 自动构建 (CI)
+
+- `push` / `pull_request` triggers will automatically run `fmt`, `clippy`, `test`, and `release build`.
+- Release executable binaries are available to download from Actions Artifacts:
+  - `fspeed-rs-linux-x64`
+  - `fspeed-rs-windows-x64`
 
 ## CLI Examples
 
