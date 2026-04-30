@@ -22,11 +22,19 @@ pub enum SessionState {
     Established,
 }
 
+use crate::reliability::{ReceiveState, SendState};
+use tokio::sync::{Mutex, Notify};
+
 /// Handle to a logical session, used to send data to the TCP writer task.
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     pub sender: mpsc::Sender<Bytes>,
     pub state: SessionState,
+    pub send_state: Arc<Mutex<SendState>>,
+    pub receive_state: Arc<Mutex<ReceiveState>>,
+    pub window_notify: Arc<Notify>,
+    pub close_notify: Arc<Notify>,
+    pub peer_addr: SocketAddr,
 }
 
 /// Used during connection establishment to await Ack/Error Handshakes
@@ -179,6 +187,11 @@ mod tests {
         let handle = SessionHandle {
             sender: tx,
             state: SessionState::Pending,
+            send_state: Arc::new(Mutex::new(SendState::new(1024))),
+            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
+            window_notify: Arc::new(Notify::new()),
+            close_notify: Arc::new(Notify::new()),
+            peer_addr: "127.0.0.1:8080".parse().unwrap(),
         };
 
         manager.insert_pending(id, handle.clone(), hs_tx).await;
@@ -210,6 +223,11 @@ mod tests {
         let handle = SessionHandle {
             sender: tx,
             state: SessionState::Established,
+            send_state: Arc::new(Mutex::new(SendState::new(1024))),
+            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
+            window_notify: Arc::new(Notify::new()),
+            close_notify: Arc::new(Notify::new()),
+            peer_addr: "127.0.0.1:8080".parse().unwrap(),
         };
 
         manager.insert(id, handle.clone()).await;

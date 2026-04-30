@@ -66,19 +66,72 @@ pub async fn run(
                                     let read_key = derive_key(&secret_recv_clone);
                                     let aad = build_aad(&packet.header);
 
+                                    let socket_ack = Arc::clone(&socket_recv_clone);
                                     tokio::spawn(async move {
                                         match decrypt_payload(&payload, &read_key, &aad) {
                                             Ok(plaintext) => {
                                                 if let Some(session) =
                                                     session_mgr.lookup(&conn_id).await
                                                 {
-                                                    if let Err(e) =
-                                                        session.sender.send(plaintext).await
-                                                    {
-                                                        tracing::warn!(
-                                                            "Failed to forward data to local TCP writer task: {}",
-                                                            e
-                                                        );
+                                                    let sequence = packet.header.sequence;
+
+                                                    // Pass to ReceiveState
+                                                    let delivered_payloads = {
+                                                        let mut state =
+                                                            session.receive_state.lock().await;
+                                                        state.receive_packet(sequence, plaintext)
+                                                    };
+
+                                                    for payload in delivered_payloads {
+                                                        if let Err(e) =
+                                                            session.sender.send(payload).await
+                                                        {
+                                                            tracing::warn!(
+                                                                "Failed to forward data to local TCP writer task: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+
+                                                    // Generate and send Ack
+                                                    let ack_num = {
+                                                        let state =
+                                                            session.receive_state.lock().await;
+                                                        state.generate_ack()
+                                                    };
+
+                                                    if let Ok(mut ack_packet) = Packet::try_new(
+                                                        PacketType::Ack,
+                                                        FLAG_ENCRYPTED,
+                                                        conn_id,
+                                                        0, // Ack sequence is typically 0
+                                                        ack_num,
+                                                        0, // Window size (TODO)
+                                                        Bytes::new(),
+                                                    ) {
+                                                        let ack_aad = build_aad(&ack_packet.header);
+                                                        let ack_payload =
+                                                            crate::payload::build_ack_payload(); // or empty
+                                                        if let Ok(encrypted_ack) = encrypt_payload(
+                                                            ack_payload.as_bytes(),
+                                                            &read_key,
+                                                            &ack_aad,
+                                                        ) {
+                                                            ack_packet.payload =
+                                                                encrypted_ack.clone();
+                                                            ack_packet.header.payload_len =
+                                                                encrypted_ack.len() as u16;
+                                                            if let Ok(encoded) =
+                                                                encode_packet(&ack_packet)
+                                                            {
+                                                                let _ = socket_ack
+                                                                    .send_to(
+                                                                        &encoded,
+                                                                        session.peer_addr,
+                                                                    )
+                                                                    .await;
+                                                            }
+                                                        }
                                                     }
                                                 } else {
                                                     tracing::warn!(
@@ -113,11 +166,31 @@ pub async fn run(
                                             tracing::warn!("Failed to decrypt Ack payload: {}", e);
                                             return;
                                         }
-                                        tracing::info!(
-                                            "Received Ack packet for ConnectionId: {}",
-                                            conn_id
+                                        tracing::debug!(
+                                            "Received Ack packet for ConnectionId: {}, ack={}",
+                                            conn_id,
+                                            packet.header.ack
                                         );
-                                        session_mgr.complete_handshake(&conn_id, true).await;
+
+                                        if let Some(session) = session_mgr.lookup(&conn_id).await {
+                                            {
+                                                let mut state = session.send_state.lock().await;
+                                                state.handle_ack(packet.header.ack);
+                                            }
+                                            session.window_notify.notify_waiters();
+
+                                            // Only complete handshake if session was pending
+                                            if session.state == SessionState::Pending {
+                                                session_mgr
+                                                    .complete_handshake(&conn_id, true)
+                                                    .await;
+                                            }
+                                        } else {
+                                            tracing::warn!(
+                                                "Received Ack for unknown ConnectionId: {}",
+                                                conn_id
+                                            );
+                                        }
                                     });
                                 }
                                 PacketType::Error => {
@@ -267,12 +340,24 @@ pub async fn run(
                                         // Register session as Pending BEFORE sending the packet
                                         // This prevents a race condition where the server replies with Ack
                                         // before the client has registered the pending handshake.
+                                        use crate::reliability::{ReceiveState, SendState};
+                                        use tokio::sync::{Mutex, Notify};
+
                                         session_mgr_clone
                                             .insert_pending(
                                                 conn_id,
                                                 SessionHandle {
                                                     sender: tx,
                                                     state: SessionState::Pending,
+                                                    send_state: Arc::new(Mutex::new(
+                                                        SendState::new(1024),
+                                                    )),
+                                                    receive_state: Arc::new(Mutex::new(
+                                                        ReceiveState::new(1024),
+                                                    )),
+                                                    window_notify: Arc::new(Notify::new()),
+                                                    close_notify: Arc::new(Notify::new()),
+                                                    peer_addr: server_addr,
                                                 },
                                                 hs_tx,
                                             )
@@ -311,6 +396,58 @@ pub async fn run(
                                                             session_mgr_clone
                                                                 .establish(&conn_id)
                                                                 .await;
+
+                                                            // Spawn retransmission task
+                                                            if let Some(session) = session_mgr_clone
+                                                                .lookup(&conn_id)
+                                                                .await
+                                                            {
+                                                                let send_state_arc =
+                                                                    session.send_state.clone();
+                                                                let close_notify =
+                                                                    session.close_notify.clone();
+                                                                let peer_addr = session.peer_addr;
+                                                                let socket_retx =
+                                                                    Arc::clone(&socket_clone);
+                                                                let session_mgr_retx =
+                                                                    session_mgr_clone.clone();
+
+                                                                tokio::spawn(async move {
+                                                                    loop {
+                                                                        tokio::select! {
+                                                                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                                let now = std::time::Instant::now();
+                                                                                let mut to_retransmit = Vec::new();
+                                                                                let mut failed = false;
+
+                                                                                {
+                                                                                    let mut state = send_state_arc.lock().await;
+                                                                                    match state.get_timed_out_packets(now) {
+                                                                                        Ok(pkts) => to_retransmit = pkts,
+                                                                                        Err(_) => failed = true,
+                                                                                    }
+                                                                                }
+
+                                                                                if failed {
+                                                                                    tracing::warn!("Max retransmissions exceeded for {}. Closing session.", conn_id);
+                                                                                    close_notify.notify_waiters();
+                                                                                    session_mgr_retx.remove(&conn_id).await;
+                                                                                    break;
+                                                                                }
+
+                                                                                for pkt in to_retransmit {
+                                                                                    if let Ok(encoded) = crate::protocol::encode_packet(&pkt) {
+                                                                                        let _ = socket_retx.send_to(&encoded, peer_addr).await;
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            _ = close_notify.notified() => {
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                });
+                                                            }
                                                         }
                                                         Ok(Ok(false)) => {
                                                             tracing::warn!(
@@ -351,7 +488,22 @@ pub async fn run(
                                                     let read_secret_clone = secret_clone.clone();
                                                     tokio::spawn(async move {
                                                         let mut tcp_buf = vec![0u8; 1200];
-                                                        let mut seq: u32 = 0; // TODO: integrate SendState::next_seq()
+                                                        let session_handle_opt =
+                                                            read_session_mgr.lookup(&conn_id).await;
+                                                        if session_handle_opt.is_none() {
+                                                            return;
+                                                        }
+                                                        let session_handle =
+                                                            session_handle_opt.unwrap();
+                                                        let send_state_arc =
+                                                            session_handle.send_state;
+                                                        let receive_state_arc =
+                                                            session_handle.receive_state;
+                                                        let window_notify =
+                                                            session_handle.window_notify;
+                                                        let close_notify =
+                                                            session_handle.close_notify;
+
                                                         let read_key =
                                                             derive_key(&read_secret_clone);
                                                         loop {
@@ -367,7 +519,44 @@ pub async fn run(
                                                                 }
                                                                 Ok(n) => {
                                                                     let plaintext = &tcp_buf[..n];
-                                                                    seq = seq.wrapping_add(1);
+
+                                                                    // Wait for window space
+                                                                    loop {
+                                                                        let can_send = {
+                                                                            let state =
+                                                                                send_state_arc
+                                                                                    .lock()
+                                                                                    .await;
+                                                                            state.can_send()
+                                                                        };
+                                                                        if can_send {
+                                                                            break;
+                                                                        }
+
+                                                                        tokio::select! {
+                                                                            _ = window_notify.notified() => {},
+                                                                            _ = close_notify.notified() => {
+                                                                                tracing::info!("Session closed, stopping local TCP reader for {}", conn_id);
+                                                                                return;
+                                                                            }
+                                                                        }
+                                                                    }
+
+                                                                    let seq = {
+                                                                        let mut state =
+                                                                            send_state_arc
+                                                                                .lock()
+                                                                                .await;
+                                                                        state.next_seq()
+                                                                    };
+
+                                                                    let current_ack = {
+                                                                        let state =
+                                                                            receive_state_arc
+                                                                                .lock()
+                                                                                .await;
+                                                                        state.generate_ack()
+                                                                    };
 
                                                                     if let Ok(mut data_packet) =
                                                                         Packet::try_new(
@@ -375,7 +564,7 @@ pub async fn run(
                                                                             FLAG_ENCRYPTED,
                                                                             conn_id,
                                                                             seq,
-                                                                            0,
+                                                                            current_ack,
                                                                             0,
                                                                             Bytes::new(),
                                                                         )
@@ -398,6 +587,18 @@ pub async fn run(
                                                                                 .payload_len =
                                                                                 encrypted_data.len()
                                                                                     as u16;
+
+                                                                            {
+                                                                                let mut state =
+                                                                                    send_state_arc
+                                                                                        .lock()
+                                                                                        .await;
+                                                                                state.save_unacked(
+                                                                                    seq,
+                                                                                    data_packet
+                                                                                        .clone(),
+                                                                                );
+                                                                            }
 
                                                                             if let Ok(encoded) =
                                                                                 encode_packet(
@@ -425,12 +626,17 @@ pub async fn run(
 
                                                         // Cleanup and Send Close packet
                                                         read_session_mgr.remove(&conn_id).await;
+                                                        let next_seq = {
+                                                            let mut state =
+                                                                send_state_arc.lock().await;
+                                                            state.next_seq()
+                                                        };
                                                         if let Ok(mut close_packet) =
                                                             Packet::try_new(
                                                                 PacketType::Close,
                                                                 FLAG_ENCRYPTED,
                                                                 conn_id,
-                                                                seq.wrapping_add(1),
+                                                                next_seq,
                                                                 0,
                                                                 0,
                                                                 Bytes::new(),
@@ -582,12 +788,24 @@ pub async fn run(
                                             let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
                                             let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
 
+                                            use crate::reliability::{ReceiveState, SendState};
+                                            use tokio::sync::{Mutex, Notify};
+
                                             session_mgr_inner
                                                 .insert_pending(
                                                     conn_id,
                                                     SessionHandle {
                                                         sender: tx,
                                                         state: SessionState::Pending,
+                                                        send_state: Arc::new(Mutex::new(
+                                                            SendState::new(1024),
+                                                        )),
+                                                        receive_state: Arc::new(Mutex::new(
+                                                            ReceiveState::new(1024),
+                                                        )),
+                                                        window_notify: Arc::new(Notify::new()),
+                                                        close_notify: Arc::new(Notify::new()),
+                                                        peer_addr: server_addr_clone,
                                                     },
                                                     hs_tx,
                                                 )
@@ -627,6 +845,62 @@ pub async fn run(
                                                                 session_mgr_inner
                                                                     .establish(&conn_id)
                                                                     .await;
+
+                                                                // Spawn retransmission task for SOCKS5
+                                                                if let Some(session) =
+                                                                    session_mgr_inner
+                                                                        .lookup(&conn_id)
+                                                                        .await
+                                                                {
+                                                                    let send_state_arc =
+                                                                        session.send_state.clone();
+                                                                    let close_notify = session
+                                                                        .close_notify
+                                                                        .clone();
+                                                                    let peer_addr =
+                                                                        session.peer_addr;
+                                                                    let socket_retx =
+                                                                        Arc::clone(&socket_inner);
+                                                                    let session_mgr_retx =
+                                                                        session_mgr_inner.clone();
+
+                                                                    tokio::spawn(async move {
+                                                                        loop {
+                                                                            tokio::select! {
+                                                                                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                                    let now = std::time::Instant::now();
+                                                                                    let mut to_retransmit = Vec::new();
+                                                                                    let mut failed = false;
+
+                                                                                    {
+                                                                                        let mut state = send_state_arc.lock().await;
+                                                                                        match state.get_timed_out_packets(now) {
+                                                                                            Ok(pkts) => to_retransmit = pkts,
+                                                                                            Err(_) => failed = true,
+                                                                                        }
+                                                                                    }
+
+                                                                                    if failed {
+                                                                                        tracing::warn!("Max retransmissions exceeded for SOCKS5 {}. Closing session.", conn_id);
+                                                                                        close_notify.notify_waiters();
+                                                                                        session_mgr_retx.remove(&conn_id).await;
+                                                                                        break;
+                                                                                    }
+
+                                                                                    for pkt in to_retransmit {
+                                                                                        if let Ok(encoded) = crate::protocol::encode_packet(&pkt) {
+                                                                                            let _ = socket_retx.send_to(&encoded, peer_addr).await;
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                                _ = close_notify.notified() => {
+                                                                                    break;
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                }
+
                                                                 if let Err(e) = send_socks5_success(
                                                                     &mut write_half,
                                                                 )
@@ -663,7 +937,25 @@ pub async fn run(
 
                                                         tokio::spawn(async move {
                                                             let mut tcp_buf = vec![0u8; 1200];
-                                                            let mut seq: u32 = 0;
+
+                                                            let session_handle_opt =
+                                                                read_session_mgr
+                                                                    .lookup(&conn_id)
+                                                                    .await;
+                                                            if session_handle_opt.is_none() {
+                                                                return;
+                                                            }
+                                                            let session_handle =
+                                                                session_handle_opt.unwrap();
+                                                            let send_state_arc =
+                                                                session_handle.send_state;
+                                                            let receive_state_arc =
+                                                                session_handle.receive_state;
+                                                            let window_notify =
+                                                                session_handle.window_notify;
+                                                            let close_notify =
+                                                                session_handle.close_notify;
+
                                                             let read_key =
                                                                 derive_key(&read_secret_clone);
 
@@ -682,7 +974,43 @@ pub async fn run(
                                                                     Ok(n) => {
                                                                         let plaintext =
                                                                             &tcp_buf[..n];
-                                                                        seq = seq.wrapping_add(1);
+
+                                                                        loop {
+                                                                            let can_send = {
+                                                                                let state =
+                                                                                    send_state_arc
+                                                                                        .lock()
+                                                                                        .await;
+                                                                                state.can_send()
+                                                                            };
+                                                                            if can_send {
+                                                                                break;
+                                                                            }
+
+                                                                            tokio::select! {
+                                                                                _ = window_notify.notified() => {},
+                                                                                _ = close_notify.notified() => {
+                                                                                    tracing::info!("Session closed, stopping local SOCKS5 TCP reader for {}", conn_id);
+                                                                                    return;
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        let seq = {
+                                                                            let mut state =
+                                                                                send_state_arc
+                                                                                    .lock()
+                                                                                    .await;
+                                                                            state.next_seq()
+                                                                        };
+
+                                                                        let current_ack = {
+                                                                            let state =
+                                                                                receive_state_arc
+                                                                                    .lock()
+                                                                                    .await;
+                                                                            state.generate_ack()
+                                                                        };
 
                                                                         if let Ok(mut data_packet) =
                                                                             Packet::try_new(
@@ -690,7 +1018,7 @@ pub async fn run(
                                                                                 FLAG_ENCRYPTED,
                                                                                 conn_id,
                                                                                 seq,
-                                                                                0,
+                                                                                current_ack,
                                                                                 0,
                                                                                 Bytes::new(),
                                                                             )
@@ -718,6 +1046,11 @@ pub async fn run(
                                                                                         .len()
                                                                                         as u16;
 
+                                                                                {
+                                                                                    let mut state = send_state_arc.lock().await;
+                                                                                    state.save_unacked(seq, data_packet.clone());
+                                                                                }
+
                                                                                 if let Ok(encoded) = encode_packet(&data_packet)
                                                                                     && let Err(e) = read_socket.send_to(&encoded, server_addr_clone).await {
                                                                                         tracing::warn!("Failed to send SOCKS5 Data packet: {}", e);
@@ -736,12 +1069,17 @@ pub async fn run(
                                                             }
 
                                                             read_session_mgr.remove(&conn_id).await;
+                                                            let next_seq = {
+                                                                let mut state =
+                                                                    send_state_arc.lock().await;
+                                                                state.next_seq()
+                                                            };
                                                             if let Ok(mut close_packet) =
                                                                 Packet::try_new(
                                                                     PacketType::Close,
                                                                     FLAG_ENCRYPTED,
                                                                     conn_id,
-                                                                    seq.wrapping_add(1),
+                                                                    next_seq,
                                                                     0,
                                                                     0,
                                                                     Bytes::new(),
