@@ -44,18 +44,19 @@ fspeed-rs client \
 2.  Starts a `tokio::net::TcpListener` for each local mapping.
 3.  When a local TCP client connects, the `fspeed-rs` client:
     *   Generates a new unique `connection_id`.
-    *   Sends an `OpenConnection` packet over UDP to the server, containing the `connection_id`, the shared secret, and the target address (e.g., `127.0.0.1:22`).
-    *   Spawns two async tasks:
-        *   **TCP → UDP:** Reads from the TCP stream, chunks into payloads, wraps in `Data` packets with sequence numbers, and pushes to the UDP sender channel.
-        *   **UDP → TCP:** Receives ordered `Data` packets from the UDP receiver channel and writes the payload to the TCP stream.
+    *   Registers the session as `Pending` locally.
+    *   Sends an `OpenConnection` packet over UDP to the server, containing the `connection_id` and the encrypted target address alongside a timestamp validation bound (e.g., `target=127.0.0.1:22\ntimestamp_ms=1682390884000`). It does **not** contain the plaintext shared secret.
+    *   Awaits a handshake synchronization (`Ack` or `Error`) from the Server. Once established, spawns two async tasks:
+        *   **TCP → UDP:** Reads from the TCP stream, chunks into payloads, wraps them in AEAD encrypted `Data` packets with sequence numbers, and pushes to the UDP sender channel.
+        *   **UDP → TCP:** Receives ordered `Data` packets from the UDP receiver channel, decrypts them natively, and writes the payload to the local TCP stream.
 
 ## 4. Server Behavior
 
 1.  Starts a single `tokio::net::UdpSocket` listening on the configured port.
 2.  Maintains a routing table (`HashMap<u32, mpsc::Sender>`) mapping `connection_id` to active connection tasks.
 3.  Upon receiving an `OpenConnection` packet:
-    *   Validates the shared secret. If invalid, drops the packet (or sends an Error packet).
-    *   Checks the requested target address against the optional `--allow` list.
+    *   Derives the AEAD key from the local shared secret to decrypt the payload. If decryption fails or timestamp boundaries fail, returns an encrypted `Error` packet.
+    *   Checks the decrypted requested target address against the optional `--allow` list.
     *   If valid, initiates a `tokio::net::TcpStream` connection to the target address.
     *   Spawns two async tasks mirroring the client (TCP → UDP and UDP → TCP).
 4.  Subsequent UDP packets for that `connection_id` are routed via channels to the respective connection task.
@@ -89,9 +90,9 @@ The wire format uses a custom, explicit binary layout using **Big-Endian** byte 
 ### Packet Types & Payloads (Encrypted via AEAD)
 
 *   **OpenConnection (Type 1):**
-    *   `payload`: Contains a UTF-8 string defining the target address and the creation timestamp (e.g., `target=127.0.0.1:22\ntimestamp_ms=1682390884000`), AES encrypted.
+    *   `payload`: Contains a UTF-8 string defining the target address and the creation timestamp (e.g., `target=127.0.0.1:22\ntimestamp_ms=1682390884000`), ChaCha20-Poly1305 AEAD encrypted. **No shared secret payload is exposed.**
 *   **Data (Type 2):**
-    *   `payload`: Raw byte chunk read from the TCP socket, AES encrypted.
+    *   `payload`: Raw byte chunk read from the TCP socket, ChaCha20-Poly1305 AEAD encrypted.
 *   **Ack (Type 3):**
     *   `sequence` field in header acts as the cumulative ACK (acknowledging all packets up to this sequence).
     *   `payload`: (Optional) Can contain a list of `u32` representing Selective ACKs (SACK) for out-of-order packets.

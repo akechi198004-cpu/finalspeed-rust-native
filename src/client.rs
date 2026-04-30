@@ -252,6 +252,26 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
                                         packet.payload = encrypted_payload.clone();
                                         packet.header.payload_len = encrypted_payload.len() as u16;
 
+                                        let (mut read_half, mut write_half) =
+                                            tcp_stream.into_split();
+                                        let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
+
+                                        let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
+
+                                        // Register session as Pending BEFORE sending the packet
+                                        // This prevents a race condition where the server replies with Ack
+                                        // before the client has registered the pending handshake.
+                                        session_mgr_clone
+                                            .insert_pending(
+                                                conn_id,
+                                                SessionHandle {
+                                                    sender: tx,
+                                                    state: SessionState::Pending,
+                                                },
+                                                hs_tx,
+                                            )
+                                            .await;
+
                                         match encode_packet(&packet) {
                                             Ok(encoded) => {
                                                 if let Err(e) = socket_clone
@@ -262,30 +282,12 @@ pub async fn run(server: String, secret: String, map: Vec<PortMap>) -> anyhow::R
                                                         "Failed to send UDP packet: {}",
                                                         e
                                                     );
+                                                    session_mgr_clone.remove(&conn_id).await;
                                                 } else {
                                                     tracing::info!(
                                                         "Sent OpenConnection packet for {} to server",
                                                         conn_id
                                                     );
-
-                                                    let (mut read_half, mut write_half) =
-                                                        tcp_stream.into_split();
-                                                    let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
-
-                                                    let (hs_tx, hs_rx) =
-                                                        tokio::sync::oneshot::channel();
-
-                                                    // Register session as Pending
-                                                    session_mgr_clone
-                                                        .insert_pending(
-                                                            conn_id,
-                                                            SessionHandle {
-                                                                sender: tx,
-                                                                state: SessionState::Pending,
-                                                            },
-                                                            hs_tx,
-                                                        )
-                                                        .await;
 
                                                     // Wait for handshake with a 5-second timeout
                                                     let handshake_result = tokio::time::timeout(
