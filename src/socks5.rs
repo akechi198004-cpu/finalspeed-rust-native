@@ -164,129 +164,154 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let handle = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            handle_socks5_greeting(&mut stream).await.ok();
-            let _ = handle_socks5_request(&mut stream).await;
+            if handle_socks5_greeting(&mut stream).await.is_ok() {
+                let _ = handle_socks5_request(&mut stream).await;
+            }
         });
         (port, handle)
     }
 
     #[tokio::test]
     async fn test_socks5_greeting_success() {
-        let (port, _) = spawn_test_server().await;
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (port, _) = spawn_test_server().await;
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        // Send greeting: VER 5, 1 Method, Method 0 (No Auth)
-        client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+            // Send greeting: VER 5, 1 Method, Method 0 (No Auth)
+            client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
 
-        let mut response = [0u8; 2];
-        client.read_exact(&mut response).await.unwrap();
-        assert_eq!(response, [0x05, 0x00]);
+            let mut response = [0u8; 2];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(response, [0x05, 0x00]);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_socks5_greeting_unsupported_version() {
-        let (port, _) = spawn_test_server().await;
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (port, _) = spawn_test_server().await;
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        // Send greeting: VER 4
-        client.write_all(&[0x04, 0x01, 0x00]).await.unwrap();
+            // Send greeting: VER 4, 1 method, 0x00
+            client.write_all(&[0x04, 0x01, 0x00]).await.unwrap();
 
-        // Server should drop connection or error, no valid response
-        let mut response = [0u8; 2];
-        assert!(client.read_exact(&mut response).await.is_err());
+            // Server should drop connection or error, no valid response
+            let mut response = [0u8; 2];
+            assert!(client.read_exact(&mut response).await.is_err());
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_socks5_greeting_unsupported_method() {
-        let (port, _) = spawn_test_server().await;
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (port, _) = spawn_test_server().await;
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        // Send greeting: VER 5, 1 Method, Method 2 (Username/Password, not supported)
-        client.write_all(&[0x05, 0x01, 0x02]).await.unwrap();
+            // Send greeting: VER 5, 1 Method, Method 2 (Username/Password, not supported)
+            client.write_all(&[0x05, 0x01, 0x02]).await.unwrap();
 
-        let mut response = [0u8; 2];
-        client.read_exact(&mut response).await.unwrap();
-        assert_eq!(response, [0x05, 0xFF]);
+            let mut response = [0u8; 2];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(response, [0x05, 0xFF]);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_socks5_request_ipv4() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let target = handle_socks5_request(&mut stream).await.unwrap();
-            assert_eq!(target.host, "1.2.3.4");
-            assert_eq!(target.port, 80);
-            send_socks5_success(&mut stream).await.unwrap();
-        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let target = handle_socks5_request(&mut stream).await.unwrap();
+                assert_eq!(target.host, "1.2.3.4");
+                assert_eq!(target.port, 80);
+                send_socks5_success(&mut stream).await.unwrap();
+            });
 
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        // Send Request: VER 5, CMD 1 (CONNECT), RSV 0, ATYP 1 (IPv4), IP 1.2.3.4, Port 80
-        let req = [0x05, 0x01, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50];
-        client.write_all(&req).await.unwrap();
+            // Send Request: VER 5, CMD 1 (CONNECT), RSV 0, ATYP 1 (IPv4), IP 1.2.3.4, Port 80
+            let req = [0x05, 0x01, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50];
+            client.write_all(&req).await.unwrap();
 
-        let mut response = [0u8; 10];
-        client.read_exact(&mut response).await.unwrap();
-        assert_eq!(response[1], 0x00); // REP_SUCCESS
+            let mut response = [0u8; 10];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(response[1], 0x00); // REP_SUCCESS
 
-        handle.await.unwrap();
+            handle.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_socks5_request_domain() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let target = handle_socks5_request(&mut stream).await.unwrap();
-            assert_eq!(target.host, "example.com");
-            assert_eq!(target.port, 443);
-        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let target = handle_socks5_request(&mut stream).await.unwrap();
+                assert_eq!(target.host, "example.com");
+                assert_eq!(target.port, 443);
+            });
 
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        let domain = b"example.com";
-        let mut req = vec![0x05, 0x01, 0x00, 0x03, domain.len() as u8];
-        req.extend_from_slice(domain);
-        req.extend_from_slice(&[0x01, 0xBB]); // Port 443
-        client.write_all(&req).await.unwrap();
+            let domain = b"example.com";
+            let mut req = vec![0x05, 0x01, 0x00, 0x03, domain.len() as u8];
+            req.extend_from_slice(domain);
+            req.extend_from_slice(&[0x01, 0xBB]); // Port 443
+            client.write_all(&req).await.unwrap();
 
-        handle.await.unwrap();
+            handle.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn test_socks5_request_unsupported_cmd() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            assert!(handle_socks5_request(&mut stream).await.is_err());
-        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(handle_socks5_request(&mut stream).await.is_err());
+            });
 
-        let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
+            let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
-        // Send Request: VER 5, CMD 2 (BIND), RSV 0, ATYP 1 (IPv4), IP 1.2.3.4, Port 80
-        let req = [0x05, 0x02, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50];
-        client.write_all(&req).await.unwrap();
+            // Send Request: VER 5, CMD 2 (BIND), RSV 0, ATYP 1 (IPv4), IP 1.2.3.4, Port 80
+            let req = [0x05, 0x02, 0x00, 0x01, 1, 2, 3, 4, 0x00, 0x50];
+            client.write_all(&req).await.unwrap();
 
-        let mut response = [0u8; 10];
-        client.read_exact(&mut response).await.unwrap();
-        assert_eq!(response[1], REP_COMMAND_NOT_SUPPORTED);
+            let mut response = [0u8; 10];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(response[1], REP_COMMAND_NOT_SUPPORTED);
 
-        handle.await.unwrap();
+            handle.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 }
