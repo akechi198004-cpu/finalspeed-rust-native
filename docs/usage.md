@@ -1,0 +1,144 @@
+# fspeed-rs 使用指南 (Usage Documentation)
+
+本指南面向最终使用者，详细描述如何在不同环境下构建、测试及部署 **fspeed-rs**。
+
+## 1. Linux 构建和运行
+
+建议在具有完整 Rust 开发环境的主机（如 Ubuntu/Debian/Arch 等）下进行编译构建：
+
+1. **环境准备:**
+   如果尚未安装 Rust，请运行以下官方脚本安装 stable toolchain：
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+2. **下载与编译:**
+   ```bash
+   git clone <repository_url>
+   cd fspeed-rs
+   cargo build --release
+   ```
+3. **运行:**
+   编译好的二进制文件位于 `target/release/fspeed-rs`。
+   ```bash
+   # 查看帮助菜单
+   ./target/release/fspeed-rs --help
+   ```
+
+## 2. Windows 构建和运行
+
+对于 Windows 用户，建议安装包含 C++ 负载的 [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 以及 `rustup` 环境。
+
+1. **环境准备:**
+   下载并运行 [rustup-init.exe](https://win.rs/rustup-init.exe)。
+2. **下载与编译:**
+   使用 Git CMD / PowerShell 下载仓库：
+   ```powershell
+   git clone <repository_url>
+   cd fspeed-rs
+   cargo build --release
+   ```
+3. **运行:**
+   产物位于 `target\release\fspeed-rs.exe`。
+   ```powershell
+   .\target\release\fspeed-rs.exe --help
+   ```
+
+## 3. 从 GitHub Actions 下载 Artifacts
+
+如果不想在本地编译，可直接通过 GitHub 获取最新构建的执行程序。
+
+1. 打开项目 GitHub 主页。
+2. 进入顶部的 **Actions** 标签栏。
+3. 选中最近成功的一个 **"build"** workflow run 记录。
+4. 在页面底部的 **Artifacts** 区域，直接点击下载目标系统的压缩包：
+   - `fspeed-rs-linux-x64`
+   - `fspeed-rs-windows-x64`
+5. 解压后赋予执行权限（针对 Linux: `chmod +x fspeed-rs`）。
+
+## 4. 本机 Loopback 快速测试
+
+本机回环（loopback）测试是验证基础逻辑的最快方式，假定我们在本地进行 `echo` 服务等简单路由验证。
+
+**启动 Server:**
+```bash
+./fspeed-rs server --listen 127.0.0.1:15000 --secret dev_test --allow 127.0.0.1:22
+```
+
+**启动 Client:**
+将本地 TCP 2222 端口转发至服务端所在机器的本地（即 127.0.0.1）22 端口：
+```bash
+./fspeed-rs client --server 127.0.0.1:15000 --secret dev_test --map 127.0.0.1:2222=127.0.0.1:22
+```
+
+## 5. 远程 VPS 部署测试方式
+
+这是最常见的生产或实验场景，将 **fspeed-rs** 用于跨地域的网络优化。
+
+**在境外/目标 VPS 运行服务端:**
+*(假设公网 IP 为 `198.51.100.1`，想要加速其上的本地 ssh 22 端口服务)*
+```bash
+# 绑定在 VPS 的所有网卡 UDP 15000 端口
+./fspeed-rs server --listen 0.0.0.0:15000 --secret your_secure_pass --allow 127.0.0.1:22
+```
+
+**在本地/个人电脑运行客户端:**
+```bash
+# 指向 VPS 远端，将本机 2222 端口进行映射穿透
+./fspeed-rs client --server 198.51.100.1:15000 --secret your_secure_pass --map 127.0.0.1:2222=127.0.0.1:22
+```
+
+## 6. SSH 映射示例
+
+成功执行上述步骤后，便可通过本地连接间接访问 VPS：
+```bash
+# 通过 2222 端口，隧道将流量转给远端的 22 端口
+ssh -p 2222 root@127.0.0.1
+```
+
+## 7. HTTP 映射示例
+
+如果您在 VPS `8080` 端口搭建了一个内部测试 Web 服务。
+
+**服务端白名单许可:**
+```bash
+./fspeed-rs server --listen 0.0.0.0:15000 --secret your_secure_pass --allow 127.0.0.1:8080
+```
+
+**客户端端口映射:**
+```bash
+./fspeed-rs client --server 198.51.100.1:15000 --secret your_secure_pass --map 127.0.0.1:18080=127.0.0.1:8080
+```
+
+**访问验证:**
+```bash
+curl http://127.0.0.1:18080
+```
+
+## 8. 常见问题 (FAQ)
+
+**Q: Client 连不上 Server 怎么办？**
+- 检查您的客户端指定的 `--server` IP 地址与端口是否正确。
+- 检查是否存在网络隔离，可尝试在服务端运行 `tcpdump udp port 15000` 观测服务端是否确实接收到了包。
+
+**Q: Server 日志提示收到 `Malformed packet received`？**
+- 此提示意味着收到了不符合本系统自定义报头格式的 UDP 数据包。由于 UDP 端口长期对外暴露，可能受到来自外网扫描工具的探测报文干扰。本项目不建议暴露在外网，如遇该提示且源 IP 非您的 Client IP，可暂时忽略。
+
+**Q: 日志提示 `OpenConnection secret mismatch`？**
+- Client 的 `--secret` 和 Server 的 `--secret` 不匹配。请确保两端传入的鉴权字符串一模一样。
+
+**Q: 日志提示 `Target not allowed`？**
+- 这是出于安全考量。Client 请求将流量映射到的 `target`（如 `--map ...=192.168.1.100:80`），但是该 `target` 不在 Server 启动时传入的 `--allow` 列表里。请将需要的 IP 及端口加入服务端白名单参数中。
+
+**Q: 启动提示端口已被占用 (Address already in use)？**
+- 这是因为您设置监听的 TCP 或 UDP 端口当前正被其他应用程序使用。您可以选择修改绑定的本地端口，或通过 `netstat` / `lsof` 排查占用该端口的进程并关闭它。
+
+**Q: Windows 环境下无法连接？**
+- **Windows Defender 防火墙阻止** 是常见原因。当您首次启动 `fspeed-rs.exe` 时，若弹出网络许可请求，请允许应用程序通过专用/公用网络。也可通过防火墙高级设置手动入站 UDP 和 TCP 端口放行。
+
+**Q: Linux 环境下无法连接？**
+- 您的 VPS 厂商（如 AWS、Alibaba Cloud）通常具有外部安全组，且默认情况下可能仅仅放通了 TCP。请前往云平台控制台页面，显式放通 **UDP** 协议和对应的服务端监听端口（如 UDP 15000）。
+- 系统内部 `iptables` / `ufw` 可能拦截了 UDP 流量。通过 `sudo ufw allow 15000/udp` 开放端口。
+
+**Q: 传输速度慢 / 存在严重丢包，这套协议完全稳定吗？**
+- **重要提醒**：当前版本（Phase 4.2）依然属于前期的基础数据面验证阶段。**当前版本还不是完整可靠 UDP**。
+- 尽管我们编写了核心的 ACK/Retransmission 及 Sliding Window 的结构框架，但尚未被完整且紧密地耦合到真实数据面的通信逻辑中。此时的数据发送是纯裸露的 UDP 不保序单发机制，丢失即丢失，无法进行高级弱网恢复与纠错补偿。未来的版本（Phase 5 及后续）才会实装完整的可靠性加速特性。

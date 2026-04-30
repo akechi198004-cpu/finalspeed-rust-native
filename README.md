@@ -1,31 +1,32 @@
 # fspeed-rs
 
-A Rust-native reliable UDP tunnel for accelerating TCP services.
+## 1. 项目简介 (Project Introduction)
 
-## Current MVP Status (Phase 4.2)
+**fspeed-rs** 是一款基于 Rust-native 构建的可靠 UDP 隧道（reliable UDP-style tunnel）工具，旨在为 TCP 服务加速实验提供底层承载支持。
 
-This phase implements a basic session manager and full-duplex TCP <-> UDP Data packet forwarding.
+- 采用 **client/server 双端转发** 结构，允许客户端通过隧道将本地 TCP 流量映射至远端服务端所指向的目标 TCP 端口。
+- 采用 **自定义可靠协议结构**，专注于轻量化传输。
+- **不兼容** 原始 Java FinalSpeed 协议。
+- **不使用** QUIC 或 SOCKS5。
+- **不使用** fake-TCP 或基于 pcap 的发包拦截机制。
 
-### What is implemented:
-- Full `tokio`-based async binary skeleton.
-- CLI argument parsing via `clap` supporting `client` and `server` subcommands.
-- Custom Big-Endian binary packet layout for the UDP transport (`magic`, `version`, `packet_type`, `flags`, `connection_id`, `sequence`, `ack`, `window`, `payload_len`).
-- Codec logic for encoding/decoding UDP datagrams with strict error checking.
-- UDP socket transport skeleton is implemented.
-- **Session Management:** Built `ClientSessionManager` and `ServerSessionManager` managing lock-free background access to independent connections via internal `mpsc` channels.
-- **Client Session Forwarding:** Client accepts multiple local TCP connections concurrently. Each splits into concurrent Reader/Writer tasks, forwarding raw bytes securely via UDP using monotonically increasing sequence numbers inside `PacketType::Data` datagrams.
-- **Server Session Forwarding:** Server strictly validates endpoint payloads before initiating target TCP connections autonomously. Concurrent target Read/Write tasks are spawned, maintaining duplex traffic back through the dynamic UDP port tracked by `ConnectionTable`.
-- **Connection Teardown:** Handling of EOF/shutdowns propagating through `PacketType::Close` over UDP to cleanup routes on peer components appropriately.
+---
 
-### What is NOT implemented yet:
-- **Full Reliable Runtime:** Basic forwarding transmits packets effectively but does not integrate full retransmission (`SendState` & `ReceiveState`) mechanisms yet.
-- OpenConnection Acknowledgement / Initial Handshake sequence synchronization.
-- QUIC
-- Java wire-compatibility (This project intentionally defines a custom Rust-native protocol).
+## 2. 当前状态 (Current Status)
 
-## Build Instructions
+目前项目已经完成了基础数据面（basic data plane）转发：
 
-### 本地检查命令 (Local Checks)
+- **基础隧道**：具备完整的 TCP 监听、TCP/UDP 流拆分、UDP 数据封装和连接表的生命周期管理。
+- **控制原语**：实现了 `OpenConnection` Payload 解析、基于 `secret` 的权限验证，以及 `allowlist` 服务端目标白名单限制。
+- **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头。
+- **自动验证**：具备基于本地 loopback 的自动集成测试和通过 GitHub Actions (Linux x64 / Windows x64) 运行的 CI 工作流。
+- ⚠️ **当前状态警告**：目前项目 **还不是** 生产级别的完整可靠 UDP。虽然代码中已经实现了 `sequence` 序列号等报头基础设计，但发送端/接收端的 ACK 回调、重传机制（retransmission）、以及滑动窗口（sliding window）尚未完整接入真实的数据收发平面（data plane）。
+
+---
+
+## 3. 构建方法 (Build Instructions)
+
+本项目推荐使用 Rust 官方 stable toolchain 编译：
 
 ```bash
 cargo fmt --check
@@ -34,23 +35,94 @@ cargo test
 cargo build --release
 ```
 
-### GitHub Actions 自动构建 (CI)
+---
 
-- `push` / `pull_request` triggers will automatically run `fmt`, `clippy`, `test`, and `release build`.
-- Release executable binaries are available to download from Actions Artifacts:
+## 4. 运行示例 (Usage Examples)
+
+以下给出了在开发环境下使用的最小化测试方式。**请注意：这些测试示例假设目标机器上存在真实的运行服务（如 SSH 或 HTTP 服务）。**
+
+### SSH 加速映射
+*场景：本地通过 2222 端口，连接被加速服务端的 22 端口。*
+
+**Server (服务端运行):**
+```bash
+cargo run --release -- server --listen 127.0.0.1:15000 --secret test123 --allow 127.0.0.1:22
+```
+
+**Client (客户端运行):**
+```bash
+cargo run --release -- client --server 127.0.0.1:15000 --secret test123 --map 127.0.0.1:2222=127.0.0.1:22
+```
+
+测试连接：
+```bash
+ssh -p 2222 user@127.0.0.1
+```
+
+### HTTP 代理映射
+*场景：加速目标服务器的 8080 服务页面。*
+
+**Server (服务端运行):**
+```bash
+cargo run --release -- server --listen 127.0.0.1:15000 --secret test123 --allow 127.0.0.1:8080
+```
+
+**Client (客户端运行):**
+```bash
+cargo run --release -- client --server 127.0.0.1:15000 --secret test123 --map 127.0.0.1:18080=127.0.0.1:8080
+```
+
+测试连接：
+```bash
+curl http://127.0.0.1:18080
+```
+
+---
+
+## 5. 参数说明 (CLI Parameters)
+
+### Server 参数
+- `--listen`: 监听的本地 UDP 地址和端口。例如 `0.0.0.0:150`。
+- `--secret`: 隧道接入密码。客户端必须提供一致的密码才能接入建立连接。
+- `--allow`: Server-side target allowlist。限制客户端允许请求连接的白名单目标地址列表。如 `--allow 127.0.0.1:22,127.0.0.1:80`。
+
+### Client 参数
+- `--server`: 隧道远程服务端的 UDP 地址和端口。例如 `198.51.100.1:150`。
+- `--secret`: 隧道接入密码。需要与服务端配置匹配。
+- `--map`: 端口映射规则，格式为 `local_addr:local_port=target_addr:target_port`。
+  - 例如 `127.0.0.1:2222=127.0.0.1:22`，表示把本地 TCP 2222 端口的流量隧道加速转发到目标远端服务 22 端口。支持使用逗号传入多条规则映射。
+
+---
+
+## 6. GitHub Actions 自动构建 (CI Artifacts)
+
+本项目通过 GitHub Actions 实现了跨平台的自动化构建与校验。
+
+- 触发条件：对 `main` 分支的 **push** 以及 **pull_request**。
+- 执行流程：每次触发均自动运行 `fmt` 格式化校验、`clippy` 静态错误检测、单元和集成 `test` 测试，以及 `release build` 发布编译。
+- 编译构件 (Artifacts)：
+  编译好的 release 级二进制执行文件会作为 Artifacts 挂载到工作流执行结果中，供下载：
   - `fspeed-rs-linux-x64`
   - `fspeed-rs-windows-x64`
 
-## CLI Examples
+*(下载方式：在 Github Actions 的目标 workflow run 页面底部，即可点击下载构建产物 Artifacts)。*
 
-### Server Mode
-Listen for incoming UDP tunnel traffic on port 150, allowing connections only to port 22 and 80 on localhost.
-```bash
-cargo run -- server --listen 0.0.0.0:150 --secret test123 --allow 127.0.0.1:22,127.0.0.1:80
-```
+---
 
-### Client Mode
-Forward local port 2222 to the target server's port 22 over the tunnel.
-```bash
-cargo run -- client --server 127.0.0.1:150 --secret test123 --map 127.0.0.1:2222=127.0.0.1:22
-```
+## 7. 安全说明 (Security Notice)
+
+- 当前协议使用的 shared `secret` 机制仅为轻量级的基础认证防重放标识，**不是高强度的安全模型**。
+- 当前在 UDP 隧道上传递的 Payload **均未进行加密**。
+- ⚠️ **强烈建议**不要在不可信的公网环境下直接用于高敏业务负载的承载。
+- ⚠️ **强烈建议**在启动 Server 时明确配置 `--allow` 目标地址白名单，以防服务端被恶意用作全网开放的任意 TCP 转发代理。
+- 安全扩展计划（如 HMAC 校验、AEAD 负载加密与 Replay Protection）详见 Roadmap 后期阶段。
+
+---
+
+## 8. Roadmap (发展路线图)
+
+- **Phase 5**：将当前的 ACK 确认、数据包重传（Retransmission）与滑动窗口（Sliding Window）实现代码完整对接并应用于真实的数据流平面 (Data Plane)。
+- **Phase 6**：完善更鲁棒和干净的连接关闭（Connection Teardown）流程和 Half-Close 处理。
+- **Phase 7**：引入更加结构化、可复用的持久化外部配置文件系统。
+- **Phase 8**：编写 Bench 性能分析用例，实现拥塞控制算法迭代调优。
+- **Phase 9**：协议层面的全面安全强化机制支持（如 HMAC/TLS 衍生秘钥体系加密）。
