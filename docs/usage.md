@@ -90,7 +90,20 @@ UDP 是默认值，以下两条命令等价：
 ./target/release/fspeed-rs client --server SERVER_IP:15000 --secret test123_secure --socks5 127.0.0.1:1080 --transport tcp
 ```
 
-TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。
+TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。已建立会话会发送 encrypted keepalive，默认每 30 秒一次，用于减少浏览器/SOCKS5 长连接闲置后失效。
+
+
+## KeepAlive
+
+已建立 session 会发送 encrypted keepalive packet：
+
+- 默认发送间隔：30 秒；
+- keepalive timeout：120 秒；
+- session idle timeout：300 秒；
+- keepalive payload 使用 ChaCha20-Poly1305 AEAD 加密；
+- packet header 仍保持明文，用于路由和 AAD 认证。
+
+这个机制主要用于减少 TCP fallback + SOCKS5 浏览器长连接在闲置后被本程序 idle sweep 或中间网络过早清理导致的页面加载失败。
 
 ## SOCKS5 Curl 测试
 

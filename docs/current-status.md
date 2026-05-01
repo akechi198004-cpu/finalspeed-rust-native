@@ -17,13 +17,13 @@
 - 已实现 SOCKS5 目标地址解析（IPv4/domain/IPv6）。
 - 已实现 ChaCha20-Poly1305 AEAD payload 加密。
 - 已实现从共享 `--secret` 派生 HKDF-SHA256 key。
-- `OpenConnection`、`Data`、`Ack`、`Error`、`Close` payload 均加密。
+- `OpenConnection`、`Data`、`Ack`、`Error`、`Close`、`KeepAlive` payload 均加密。
 - 明文 header 字段通过 AEAD AAD 认证。
 - `OpenConnection` 的 timestamp 校验窗口为 300 秒。
 - Server 侧支持基于 socket address 的 target allowlist。
 - 会话级收发状态支持累计 ACK、有序交付、重复包丢弃、乱序缓冲。
-- UDP 与 TCP 路径均已接入重传任务。
-- Client/Server 均支持 tombstone、未知连接告警限速、`last_activity` 跟踪与 idle sweep。
+- UDP 路径已接入重传任务；TCP transport 不启动重传任务。
+- Client/Server 均支持 encrypted keepalive、tombstone、未知连接告警限速、`last_activity` 跟踪与 idle sweep。
 - GitHub Actions 在 Linux/Windows 构建并上传 release artifacts。
 
 ## 未实现能力
@@ -43,7 +43,7 @@
 ## 实验性特征
 
 - 当前可靠性运行时已启用，但较简化：固定 RTO、固定 packet 窗口、仅累计 ACK。
-- TCP fallback 在 TCP stream 上复用同一套 packet/crypto/ACK/重传逻辑，可用于 UDP 被屏蔽的场景，但不是加速模式。
+- TCP fallback 在 TCP stream 上复用同一套 packet/crypto/ACK 处理，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务。
 - SOCKS5 适合浏览器与 curl 测试，但会产生大量短会话，应视为实验性便利层。
 
 ## Transport 对比
@@ -62,7 +62,8 @@
 - packet header 保持明文，便于按 type/connection ID 路由。
 - AAD 覆盖 `magic`、`version`、`packet_type`、`flags`、`connection_id`、`sequence`、`ack`、`window`。
 - AAD 不包含 `payload_len`。
-- 携带 `OpenConnection`、`Data`、`Ack`、`Error`、`Close` 的 packet 应设置 `FLAG_ENCRYPTED = 0x0001`。
+- 携带 `OpenConnection`、`Data`、`Ack`、`Error`、`Close`、`KeepAlive` 的 packet 应设置 `FLAG_ENCRYPTED = 0x0001`。
+- KeepAlive payload 同样使用 ChaCha20-Poly1305 AEAD 加密，默认每 30 秒发送一次。
 - `OpenConnection` 解密后明文格式为：
 
 ```text
@@ -81,10 +82,11 @@ timestamp_ms=<unix_epoch_milliseconds>
 - ACK 为累计确认：`ack = N` 表示序号 `<= N` 已连续收到。
 - 接收端接受到加密 `Data` 后会回加密 `Ack`。
 - 发送端收到累计 ACK 后移除对应未确认 packet。
-- 重传扫描间隔：`200 ms`。
+- UDP 重传扫描间隔：`200 ms`。
 - 初始/固定 RTO：`1000 ms`。
 - 最大重传次数：`20`。
 - 默认收发窗口：`1024` packets。
+- KeepAlive interval：`30 s`；KeepAlive timeout：`120 s`；Session idle timeout：`300 s`。
 - 不支持 SACK、拥塞控制、自适应 RTO、按字节 ACK。
 
 ## SOCKS5 支持
@@ -112,6 +114,7 @@ timestamp_ms=<unix_epoch_milliseconds>
   - OpenConnection payload 解析与 Error payload 解析；
   - SOCKS5 greeting 与 request 解析；
   - reliability 收发状态、累计 ACK、重传超时、最大重传失败、重复包与乱序缓冲；
+  - keepalive packet 编解码、payload 加密、last_activity 更新、idle sweep 保活行为；
   - session tombstone、未知连接限速与 idle sweep。
 - GitHub Actions：
   - Linux x64 job：`cargo fmt --check`、`cargo clippy -- -D warnings`、`cargo test`、`cargo build --release`；
@@ -133,7 +136,6 @@ timestamp_ms=<unix_epoch_milliseconds>
 
 - 为 `OpenConnection` 增加 replay cache。
 - 增加 per-session salt，或采用更强的 handshake 派生 key 方案。
-- 明确 TCP transport 是否应继续复用重传语义，或改为 transport-specific reliability 策略。
 - 增强 allowlist 拒绝与 SOCKS5 target 失败场景的可观测日志。
 - 为重复部署场景提供结构化配置文件。
 - 补充 IPv6 SOCKS5 与 allowlist/domain 交互场景测试。

@@ -17,6 +17,7 @@ pub enum PacketType {
     Ack = 3,
     Close = 4,
     Error = 5,
+    KeepAlive = 6,
 }
 
 impl TryFrom<u8> for PacketType {
@@ -29,6 +30,7 @@ impl TryFrom<u8> for PacketType {
             3 => Ok(PacketType::Ack),
             4 => Ok(PacketType::Close),
             5 => Ok(PacketType::Error),
+            6 => Ok(PacketType::KeepAlive),
             _ => Err(FSpeedError::InvalidPacketType),
         }
     }

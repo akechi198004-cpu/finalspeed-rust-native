@@ -319,6 +319,8 @@ pub struct ServerSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{DEFAULT_SEND_WINDOW, SESSION_IDLE_TIMEOUT};
+    use crate::keepalive::record_received_keepalive;
 
     #[test]
     fn test_connection_id_display() {
@@ -421,5 +423,34 @@ mod tests {
 
         let lookup_after = manager.lookup(&id).await;
         assert!(lookup_after.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_keepalive_touch_prevents_idle_sweep() {
+        let manager = ServerSessionManager::new();
+        let (tx, _) = mpsc::channel(1);
+        let id = ConnectionId(7);
+        let handle = SessionHandle::new(
+            tx,
+            SessionState::Established,
+            Arc::new(Mutex::new(SendState::new(DEFAULT_SEND_WINDOW))),
+            Arc::new(Mutex::new(ReceiveState::new(DEFAULT_SEND_WINDOW))),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            "127.0.0.1:8080".parse().unwrap(),
+        );
+
+        let before = handle.last_activity();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        record_received_keepalive(&handle);
+        let after = handle.last_activity();
+        assert!(after > before);
+
+        manager.insert(id, handle).await;
+        manager
+            .sweep_idle_sessions(after + SESSION_IDLE_TIMEOUT / 2, SESSION_IDLE_TIMEOUT)
+            .await;
+
+        assert!(manager.lookup(&id).await.is_some());
     }
 }

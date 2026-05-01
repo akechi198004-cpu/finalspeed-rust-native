@@ -6,11 +6,14 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{RwLock, mpsc};
 
 use crate::cli::TransportMode;
-use crate::constants::{DEFAULT_SEND_WINDOW, TCP_READ_BUFFER_SIZE};
+use crate::constants::{DEFAULT_SEND_WINDOW, KEEPALIVE_INTERVAL, TCP_READ_BUFFER_SIZE};
 use crate::crypto::{
     build_aad, decrypt_payload, derive_key, encrypt_payload, validate_timestamp_ms,
 };
 use crate::framing::{read_frame, write_frame};
+use crate::keepalive::{
+    build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
+};
 use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
 use crate::payload::{build_ack_payload, build_error_payload, parse_open_connection_payload};
 use crate::protocol::{decode_packet, encode_packet};
@@ -69,6 +72,96 @@ pub async fn run(
         TransportMode::Udp => run_udp(listen, secret, allow).await,
         TransportMode::Tcp => run_tcp(listen, secret, allow).await,
     }
+}
+
+fn spawn_udp_keepalive_task(
+    conn_id: crate::session::ConnectionId,
+    session_manager: ServerSessionManager,
+    socket: Arc<UdpSocket>,
+    peer_addr: SocketAddr,
+    secret: String,
+) {
+    tokio::spawn(async move {
+        let Some(initial_session) = session_manager.lookup(&conn_id).await else {
+            return;
+        };
+        let close_notify = initial_session.close_notify.clone();
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                    let Some(session) = session_manager.lookup(&conn_id).await else {
+                        break;
+                    };
+                    if !should_send_keepalive(&session) {
+                        continue;
+                    }
+
+                    let key = derive_key(&secret);
+                    match build_encrypted_keepalive_packet(conn_id, &key)
+                        .and_then(|packet| encode_packet(&packet))
+                    {
+                        Ok(encoded) => {
+                            match socket.send_to(&encoded, peer_addr).await {
+                                Ok(_) => session.touch(),
+                                Err(e) => tracing::debug!("Failed to send UDP keepalive for {}: {}", conn_id, e),
+                            }
+                        }
+                        Err(e) => tracing::warn!("Failed to build UDP keepalive for {}: {}", conn_id, e),
+                    }
+                }
+                _ = close_notify.notified() => {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn spawn_tcp_keepalive_task(
+    conn_id: crate::session::ConnectionId,
+    session_manager: ServerSessionManager,
+    tx_out: mpsc::Sender<Bytes>,
+    secret: String,
+) {
+    tokio::spawn(async move {
+        let Some(initial_session) = session_manager.lookup(&conn_id).await else {
+            return;
+        };
+        let close_notify = initial_session.close_notify.clone();
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                    let Some(session) = session_manager.lookup(&conn_id).await else {
+                        break;
+                    };
+                    if !should_send_keepalive(&session) {
+                        continue;
+                    }
+
+                    let key = derive_key(&secret);
+                    match build_encrypted_keepalive_packet(conn_id, &key)
+                        .and_then(|packet| encode_packet(&packet))
+                    {
+                        Ok(encoded) => {
+                            match tx_out.send(Bytes::from(encoded)).await {
+                                Ok(_) => session.touch(),
+                                Err(e) => {
+                                    tracing::debug!("Failed to queue TCP keepalive for {}: {}", conn_id, e);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => tracing::warn!("Failed to build TCP keepalive for {}: {}", conn_id, e),
+                    }
+                }
+                _ = close_notify.notified() => {
+                    break;
+                }
+            }
+        }
+    });
 }
 
 #[allow(clippy::collapsible_if)]
@@ -195,6 +288,13 @@ pub async fn run_udp(
                                                     ),
                                                 )
                                                 .await;
+                                            spawn_udp_keepalive_task(
+                                                conn_id,
+                                                session_mgr_clone.clone(),
+                                                Arc::clone(&socket_clone),
+                                                peer,
+                                                secret_ref.clone(),
+                                            );
 
                                             // Spawn retransmission task for Server
                                             if let Some(session) =
@@ -758,6 +858,57 @@ pub async fn run_udp(
                             }
                         });
                     }
+                    PacketType::KeepAlive => {
+                        if packet.header.flags & FLAG_ENCRYPTED == 0 {
+                            tracing::warn!(peer_address = %peer, "KeepAlive packet missing FLAG_ENCRYPTED, dropping");
+                            continue;
+                        }
+
+                        let read_key = derive_key(&secret_ref);
+                        let aad = build_aad(&packet.header);
+                        let payload_encrypted = packet.payload.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = decrypt_payload(&payload_encrypted, &read_key, &aad) {
+                                tracing::warn!(
+                                    peer_address = %peer,
+                                    error = %e,
+                                    "Failed to decrypt KeepAlive payload"
+                                );
+                                return;
+                            }
+
+                            if let Some(session) = session_mgr_clone.lookup(&conn_id).await {
+                                record_received_keepalive(&session);
+                                tracing::debug!(
+                                    "Received KeepAlive packet for ConnectionId: {}",
+                                    conn_id
+                                );
+                            } else {
+                                use crate::session::UnknownState;
+                                match session_mgr_clone.check_unknown(&conn_id).await {
+                                    UnknownState::RecentlyClosed => {
+                                        tracing::debug!(
+                                            "Dropping late KeepAlive packet for recently closed ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::RateLimited => {
+                                        tracing::debug!(
+                                            "Dropping repeated KeepAlive packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::WarnFirstTime => {
+                                        tracing::warn!(
+                                            "Received KeepAlive packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    }
                     _ => {
                         tracing::warn!("Unhandled packet type: {:?}", packet_type);
                     }
@@ -938,6 +1089,12 @@ pub async fn run_tcp(
                                                                             peer,
                                                                         ),
                                                                     ).await;
+                                                                    spawn_tcp_keepalive_task(
+                                                                        conn_id,
+                                                                        session_mgr_c.clone(),
+                                                                        tx_out_c.clone(),
+                                                                        secret_c.clone(),
+                                                                    );
 
                                                                     // Send Ack payload
                                                                     let key = derive_key(&secret_c);
@@ -1531,6 +1688,62 @@ pub async fn run_tcp(
                                                             UnknownState::WarnFirstTime => {
                                                                 tracing::warn!(
                                                                     "Received Close packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                            PacketType::KeepAlive => {
+                                                if packet.header.flags & FLAG_ENCRYPTED == 0 {
+                                                    tracing::warn!(peer_address = %peer, "KeepAlive packet missing FLAG_ENCRYPTED, dropping");
+                                                    continue;
+                                                }
+
+                                                let read_key = derive_key(&secret_c);
+                                                let aad = build_aad(&packet.header);
+                                                let payload_encrypted = packet.payload.clone();
+
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = decrypt_payload(
+                                                        &payload_encrypted,
+                                                        &read_key,
+                                                        &aad,
+                                                    ) {
+                                                        tracing::warn!(peer_address = %peer, error = %e, "Failed to decrypt KeepAlive payload");
+                                                        return;
+                                                    }
+
+                                                    if let Some(session) =
+                                                        session_mgr_c.lookup(&conn_id).await
+                                                    {
+                                                        session.touch();
+                                                        tracing::debug!(
+                                                            "Received KeepAlive packet for ConnectionId: {}",
+                                                            conn_id
+                                                        );
+                                                    } else {
+                                                        use crate::session::UnknownState;
+                                                        match session_mgr_c
+                                                            .check_unknown(&conn_id)
+                                                            .await
+                                                        {
+                                                            UnknownState::RecentlyClosed => {
+                                                                tracing::debug!(
+                                                                    "Dropping late KeepAlive packet for recently closed ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::RateLimited => {
+                                                                tracing::debug!(
+                                                                    "Dropping repeated KeepAlive packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::WarnFirstTime => {
+                                                                tracing::warn!(
+                                                                    "Received KeepAlive packet for unknown ConnectionId: {}",
                                                                     conn_id
                                                                 );
                                                             }

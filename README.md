@@ -10,8 +10,9 @@
 - 已实现 TCP transport fallback（基于长度前缀 framing）。
 - 已实现静态 `--map` TCP 转发。
 - 已实现客户端 SOCKS5 无认证 `CONNECT`。
-- `OpenConnection`、`Data`、`Ack`、`Error`、`Close` 的 payload 均已加密。
+- `OpenConnection`、`Data`、`Ack`、`Error`、`Close`、`KeepAlive` 的 payload 均已加密。
 - `Data` packet 使用 sequence number、累计 ACK、固定窗口与重传机制。
+- 已实现加密 keepalive：默认每 30 秒发送一次，用于减少 TCP fallback + SOCKS5 浏览器长连接闲置后失效。
 - 目前仍是实验阶段，尚未实现 SACK、拥塞控制、自适应 RTO、replay cache、per-session salt、生产级加固等能力。
 
 更详细的实现快照见 [docs/current-status.md](docs/current-status.md)。
@@ -91,6 +92,8 @@ TCP fallback 使用如下 framing：
 ```text
 u32 big-endian length || encoded_packet
 ```
+
+已建立会话会发送 encrypted keepalive，默认间隔 30 秒；keepalive timeout 为 120 秒，session idle timeout 仍为 300 秒。
 
 ## SOCKS5 示例
 
@@ -347,7 +350,7 @@ Download them from the Artifacts section of the GitHub Actions run page.
 
 - The shared `--secret` is used locally to derive a 32-byte AEAD key with HKDF-SHA256.
 - The shared secret is not sent as a plaintext packet payload.
-- Packet payloads are encrypted with ChaCha20-Poly1305.
+- Packet payloads, including keepalive payloads, are encrypted with ChaCha20-Poly1305.
 - Packet headers are plaintext for routing, but selected header fields are authenticated as AEAD AAD.
 - `OpenConnection` contains an encrypted target address and timestamp.
 - Current replay protection is timestamp-only. There is no replay cache or per-session salt yet.

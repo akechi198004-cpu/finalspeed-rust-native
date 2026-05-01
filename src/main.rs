@@ -5,6 +5,7 @@ pub mod constants;
 pub mod crypto;
 pub mod error;
 pub mod framing;
+pub mod keepalive;
 pub mod packet;
 pub mod payload;
 pub mod protocol;
