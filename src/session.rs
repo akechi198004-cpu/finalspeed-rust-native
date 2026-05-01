@@ -14,7 +14,18 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, mpsc, oneshot};
+
+const TOMBSTONE_TTL: Duration = Duration::from_secs(60);
+const WARNING_RATE_LIMIT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnknownState {
+    RecentlyClosed,
+    RateLimited,
+    WarnFirstTime,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -47,6 +58,8 @@ pub struct HandshakeNotifier {
 pub struct ClientSessionManager {
     sessions: Arc<RwLock<HashMap<ConnectionId, SessionHandle>>>,
     handshakes: Arc<RwLock<HashMap<ConnectionId, oneshot::Sender<bool>>>>,
+    closed_connections: Arc<RwLock<HashMap<ConnectionId, Instant>>>,
+    unknown_seen: Arc<RwLock<HashMap<ConnectionId, Instant>>>,
 }
 
 impl Default for ClientSessionManager {
@@ -60,6 +73,8 @@ impl ClientSessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             handshakes: Arc::new(RwLock::new(HashMap::new())),
+            closed_connections: Arc::new(RwLock::new(HashMap::new())),
+            unknown_seen: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -106,10 +121,36 @@ impl ClientSessionManager {
         }
         let mut map = self.sessions.write().await;
         let handle = map.remove(id);
-        if handle.is_some() {
+        if let Some(ref h) = handle {
             tracing::debug!("ClientSessionManager removed connection: {}", id);
+            h.close_notify.notify_waiters();
+
+            let mut closed_map = self.closed_connections.write().await;
+            closed_map.insert(*id, Instant::now());
         }
         handle
+    }
+
+    pub async fn check_unknown(&self, id: &ConnectionId) -> UnknownState {
+        let now = Instant::now();
+
+        {
+            let mut closed_map = self.closed_connections.write().await;
+            closed_map.retain(|_, v| now.duration_since(*v) < TOMBSTONE_TTL);
+            if closed_map.contains_key(id) {
+                return UnknownState::RecentlyClosed;
+            }
+        }
+
+        let mut unknown_map = self.unknown_seen.write().await;
+        unknown_map.retain(|_, v| now.duration_since(*v) < WARNING_RATE_LIMIT);
+
+        if unknown_map.contains_key(id) {
+            UnknownState::RateLimited
+        } else {
+            unknown_map.insert(*id, now);
+            UnknownState::WarnFirstTime
+        }
     }
 }
 
@@ -117,6 +158,8 @@ impl ClientSessionManager {
 #[derive(Debug, Clone)]
 pub struct ServerSessionManager {
     sessions: Arc<RwLock<HashMap<ConnectionId, SessionHandle>>>,
+    closed_connections: Arc<RwLock<HashMap<ConnectionId, Instant>>>,
+    unknown_seen: Arc<RwLock<HashMap<ConnectionId, Instant>>>,
 }
 
 impl Default for ServerSessionManager {
@@ -129,6 +172,8 @@ impl ServerSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            closed_connections: Arc::new(RwLock::new(HashMap::new())),
+            unknown_seen: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -146,10 +191,36 @@ impl ServerSessionManager {
     pub async fn remove(&self, id: &ConnectionId) -> Option<SessionHandle> {
         let mut map = self.sessions.write().await;
         let handle = map.remove(id);
-        if handle.is_some() {
+        if let Some(ref h) = handle {
             tracing::debug!("ServerSessionManager removed connection: {}", id);
+            h.close_notify.notify_waiters();
+
+            let mut closed_map = self.closed_connections.write().await;
+            closed_map.insert(*id, Instant::now());
         }
         handle
+    }
+
+    pub async fn check_unknown(&self, id: &ConnectionId) -> UnknownState {
+        let now = Instant::now();
+
+        {
+            let mut closed_map = self.closed_connections.write().await;
+            closed_map.retain(|_, v| now.duration_since(*v) < TOMBSTONE_TTL);
+            if closed_map.contains_key(id) {
+                return UnknownState::RecentlyClosed;
+            }
+        }
+
+        let mut unknown_map = self.unknown_seen.write().await;
+        unknown_map.retain(|_, v| now.duration_since(*v) < WARNING_RATE_LIMIT);
+
+        if unknown_map.contains_key(id) {
+            UnknownState::RateLimited
+        } else {
+            unknown_map.insert(*id, now);
+            UnknownState::WarnFirstTime
+        }
     }
 }
 
@@ -176,6 +247,39 @@ mod tests {
     fn test_connection_id_display() {
         let id = ConnectionId(42);
         assert_eq!(id.to_string(), "Conn(42)");
+    }
+
+    #[tokio::test]
+    async fn test_check_unknown_tombstone_and_rate_limit() {
+        let manager = ClientSessionManager::new();
+        let id = ConnectionId(99);
+
+        // Initially unknown
+        let state1 = manager.check_unknown(&id).await;
+        assert_eq!(state1, UnknownState::WarnFirstTime);
+
+        // Immediately again -> RateLimited
+        let state2 = manager.check_unknown(&id).await;
+        assert_eq!(state2, UnknownState::RateLimited);
+
+        // Add to manager and remove it -> RecentlyClosed
+        let (tx, _) = mpsc::channel(1);
+        let (hs_tx, _) = oneshot::channel();
+        let handle = SessionHandle {
+            sender: tx,
+            state: SessionState::Established,
+            send_state: Arc::new(Mutex::new(SendState::new(1024))),
+            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
+            window_notify: Arc::new(Notify::new()),
+            close_notify: Arc::new(Notify::new()),
+            peer_addr: "127.0.0.1:8080".parse().unwrap(),
+        };
+
+        manager.insert_pending(id, handle, hs_tx).await;
+        manager.remove(&id).await;
+
+        let state3 = manager.check_unknown(&id).await;
+        assert_eq!(state3, UnknownState::RecentlyClosed);
     }
 
     #[tokio::test]

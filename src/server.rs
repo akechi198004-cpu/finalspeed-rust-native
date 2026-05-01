@@ -563,10 +563,27 @@ pub async fn run_udp(
                                 }
                                 session.window_notify.notify_waiters();
                             } else {
-                                tracing::warn!(
-                                    "Received Ack for unknown ConnectionId: {}",
-                                    conn_id
-                                );
+                                use crate::session::UnknownState;
+                                match session_mgr_clone.check_unknown(&conn_id).await {
+                                    UnknownState::RecentlyClosed => {
+                                        tracing::debug!(
+                                            "Dropping late Ack packet for recently closed ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::RateLimited => {
+                                        tracing::debug!(
+                                            "Dropping repeated Ack packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::WarnFirstTime => {
+                                        tracing::warn!(
+                                            "Received Ack packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                }
                             }
                         });
                     }
@@ -636,10 +653,27 @@ pub async fn run_udp(
                                             }
                                         }
                                     } else {
-                                        tracing::warn!(
-                                            "Received Data packet for unknown ConnectionId: {}",
-                                            conn_id
-                                        );
+                                        use crate::session::UnknownState;
+                                        match session_mgr_clone.check_unknown(&conn_id).await {
+                                            UnknownState::RecentlyClosed => {
+                                                tracing::debug!(
+                                                    "Dropping late Data packet for recently closed ConnectionId: {}",
+                                                    conn_id
+                                                );
+                                            }
+                                            UnknownState::RateLimited => {
+                                                tracing::debug!(
+                                                    "Dropping repeated Data packet for unknown ConnectionId: {}",
+                                                    conn_id
+                                                );
+                                            }
+                                            UnknownState::WarnFirstTime => {
+                                                tracing::warn!(
+                                                    "Received Data packet for unknown ConnectionId: {}",
+                                                    conn_id
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -672,11 +706,38 @@ pub async fn run_udp(
                                 return;
                             }
 
-                            tracing::info!("Received Close packet for ConnectionId: {}", conn_id);
-                            session_mgr_clone.remove(&conn_id).await;
-                            {
-                                let mut table = conn_table_clone.write().await;
-                                table.remove(&conn_id);
+                            if session_mgr_clone.lookup(&conn_id).await.is_some() {
+                                tracing::info!(
+                                    "Received Close packet for ConnectionId: {}",
+                                    conn_id
+                                );
+                                session_mgr_clone.remove(&conn_id).await;
+                                {
+                                    let mut table = conn_table_clone.write().await;
+                                    table.remove(&conn_id);
+                                }
+                            } else {
+                                use crate::session::UnknownState;
+                                match session_mgr_clone.check_unknown(&conn_id).await {
+                                    UnknownState::RecentlyClosed => {
+                                        tracing::debug!(
+                                            "Dropping late Close packet for recently closed ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::RateLimited => {
+                                        tracing::debug!(
+                                            "Dropping repeated Close packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                    UnknownState::WarnFirstTime => {
+                                        tracing::warn!(
+                                            "Received Close packet for unknown ConnectionId: {}",
+                                            conn_id
+                                        );
+                                    }
+                                }
                             }
                         });
                     }
@@ -1394,10 +1455,30 @@ pub async fn run_tcp(
                                                         }
                                                         session.window_notify.notify_waiters();
                                                     } else {
-                                                        tracing::warn!(
-                                                            "Received Ack for unknown ConnectionId: {}",
-                                                            conn_id
-                                                        );
+                                                        use crate::session::UnknownState;
+                                                        match session_mgr_c
+                                                            .check_unknown(&conn_id)
+                                                            .await
+                                                        {
+                                                            UnknownState::RecentlyClosed => {
+                                                                tracing::debug!(
+                                                                    "Dropping late Ack packet for recently closed ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::RateLimited => {
+                                                                tracing::debug!(
+                                                                    "Dropping repeated Ack packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::WarnFirstTime => {
+                                                                tracing::warn!(
+                                                                    "Received Ack packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                        }
                                                     }
                                                 });
                                             }
@@ -1499,10 +1580,18 @@ pub async fn run_tcp(
                                                                     }
                                                                 }
                                                             } else {
-                                                                tracing::warn!(
-                                                                    "Received Data packet for unknown ConnectionId: {}",
-                                                                    conn_id
-                                                                );
+                                                                use crate::session::UnknownState;
+                                                                match session_mgr_c.check_unknown(&conn_id).await {
+                                                                    UnknownState::RecentlyClosed => {
+                                                                        tracing::debug!("Dropping late Data packet for recently closed ConnectionId: {}", conn_id);
+                                                                    }
+                                                                    UnknownState::RateLimited => {
+                                                                        tracing::debug!("Dropping repeated Data packet for unknown ConnectionId: {}", conn_id);
+                                                                    }
+                                                                    UnknownState::WarnFirstTime => {
+                                                                        tracing::warn!("Received Data packet for unknown ConnectionId: {}", conn_id);
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                         Err(e) => {
@@ -1531,14 +1620,46 @@ pub async fn run_tcp(
                                                         return;
                                                     }
 
-                                                    tracing::info!(
-                                                        "Received Close packet for ConnectionId: {}",
-                                                        conn_id
-                                                    );
-                                                    session_mgr_c.remove(&conn_id).await;
+                                                    if session_mgr_c
+                                                        .lookup(&conn_id)
+                                                        .await
+                                                        .is_some()
                                                     {
-                                                        let mut table = conn_table_c.write().await;
-                                                        table.remove(&conn_id);
+                                                        tracing::info!(
+                                                            "Received Close packet for ConnectionId: {}",
+                                                            conn_id
+                                                        );
+                                                        session_mgr_c.remove(&conn_id).await;
+                                                        {
+                                                            let mut table =
+                                                                conn_table_c.write().await;
+                                                            table.remove(&conn_id);
+                                                        }
+                                                    } else {
+                                                        use crate::session::UnknownState;
+                                                        match session_mgr_c
+                                                            .check_unknown(&conn_id)
+                                                            .await
+                                                        {
+                                                            UnknownState::RecentlyClosed => {
+                                                                tracing::debug!(
+                                                                    "Dropping late Close packet for recently closed ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::RateLimited => {
+                                                                tracing::debug!(
+                                                                    "Dropping repeated Close packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                            UnknownState::WarnFirstTime => {
+                                                                tracing::warn!(
+                                                                    "Received Close packet for unknown ConnectionId: {}",
+                                                                    conn_id
+                                                                );
+                                                            }
+                                                        }
                                                     }
                                                 });
                                             }
