@@ -156,6 +156,7 @@ impl ReceiveState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::DEFAULT_SEND_WINDOW;
     use crate::packet::{Packet, PacketType};
     use crate::session::ConnectionId;
     use bytes::Bytes;
@@ -175,14 +176,14 @@ mod tests {
 
     #[test]
     fn test_send_state_sequence() {
-        let mut send_state = SendState::new(1024);
+        let mut send_state = SendState::new(DEFAULT_SEND_WINDOW);
         assert_eq!(send_state.next_seq(), 1);
         assert_eq!(send_state.next_seq(), 2);
     }
 
     #[test]
     fn test_send_state_unacked_and_ack() {
-        let mut send_state = SendState::new(1024);
+        let mut send_state = SendState::new(DEFAULT_SEND_WINDOW);
 
         let pkt1 = create_test_packet(1);
         let pkt2 = create_test_packet(2);
@@ -220,7 +221,7 @@ mod tests {
 
     #[test]
     fn test_send_state_retransmit_timeout() {
-        let mut send_state = SendState::new(1024);
+        let mut send_state = SendState::new(DEFAULT_SEND_WINDOW);
         let pkt = create_test_packet(1);
 
         send_state.save_unacked(1, pkt.clone());
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_send_state_max_retransmit_failure() {
-        let mut send_state = SendState::new(1024);
+        let mut send_state = SendState::new(DEFAULT_SEND_WINDOW);
         let pkt = create_test_packet(1);
         send_state.save_unacked(1, pkt);
 
@@ -264,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_receive_state_in_order() {
-        let mut rx_state = ReceiveState::new(1024);
+        let mut rx_state = ReceiveState::new(DEFAULT_SEND_WINDOW);
 
         let p1 = rx_state.receive_packet(1, Bytes::from("A"));
         assert_eq!(p1.len(), 1);
@@ -277,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_receive_state_out_of_order() {
-        let mut rx_state = ReceiveState::new(1024);
+        let mut rx_state = ReceiveState::new(DEFAULT_SEND_WINDOW);
 
         // Receive 2 before 1
         let p2 = rx_state.receive_packet(2, Bytes::from("B"));
@@ -300,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_receive_state_duplicate() {
-        let mut rx_state = ReceiveState::new(1024);
+        let mut rx_state = ReceiveState::new(DEFAULT_SEND_WINDOW);
 
         rx_state.receive_packet(1, Bytes::from("A"));
         let dup = rx_state.receive_packet(1, Bytes::from("A"));
@@ -329,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_receive_state_out_of_order_missing_gap() {
-        let mut rx_state = ReceiveState::new(1024);
+        let mut rx_state = ReceiveState::new(DEFAULT_SEND_WINDOW);
 
         // Sequence 1 is lost, receive 2 and 3
         let p2 = rx_state.receive_packet(2, Bytes::from("B"));
