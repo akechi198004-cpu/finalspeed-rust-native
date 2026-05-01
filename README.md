@@ -141,6 +141,6 @@ curl --socks5-hostname 127.0.0.1:1080 http://example.com
 ## 8. Roadmap (发展路线图)
 
 - **Phase 5**：将当前的 ACK 确认、数据包重传（Retransmission）与滑动窗口（Sliding Window）实现代码完整对接并应用于真实的数据流平面 (Data Plane)。
-- **Phase 6**：完善更鲁棒和干净的连接关闭（Connection Teardown）流程和 Half-Close 处理。
+- **Phase 6**：完善更鲁棒和干净的连接关闭（Connection Teardown）流程和 Half-Close 处理（已部分实现 Session Tombstone 与 Close 自动清理）。
 - **Phase 7**：引入更加结构化、可复用的持久化外部配置文件系统。
 - **Phase 8**：安全协议层增强完善：全面接管 per-session salt / replay cache 防护矩阵。

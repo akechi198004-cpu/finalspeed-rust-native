@@ -162,3 +162,6 @@ curl --socks5-hostname 127.0.0.1:1080 http://example.com
 
 - **UDP (Default)**: A pure UDP transport mode where each packet corresponds to a single UDP datagram. This is the primary target for `fspeed-rs` and provides the best performance for accelerating TCP streams.
 - **TCP (Fallback)**: A TCP transport mode where packets are encoded into length-prefixed frames and sent over a TCP connection. Use this mode if your network environment or VPS restricts UDP traffic. Note that TCP transport maintains the reliable runtime and encryption features but does not guarantee the same acceleration effects as UDP transport, as TCP already provides reliable stream transmission.
+
+**Q: Server/Client 日志为什么有时候会有 `Dropping late packet for recently closed ConnectionId` 或 `Dropping repeated packet for unknown ConnectionId` 的 debug 提示？**
+- 浏览器或其他应用使用 SOCKS5 时通常会创建大量的短连接。当这些连接在程序内部被正常释放关闭后，网络上由于延迟或重传，仍有可能收到属于这些已关闭连接的迟到数据包（如 Data、Ack 或 Close）。程序内置了 Tombstone (墓碑) 和 Rate-Limit 机制，会静默丢弃这些已失效连接的遗留报文，从而避免大量的无效 Warning 警告刷屏。

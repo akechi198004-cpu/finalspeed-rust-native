@@ -132,6 +132,8 @@ A connection represents a single proxied TCP stream.
 
 ## 11. Stream Close Behavior
 
+- **Session Tombstoning (墓碑机制):** 尤其是通过浏览器 SOCKS5 代理产生的海量短连接，即使连接已经关闭或失败移除，网络中仍可能有迟到或重传的报文到达。为了避免打印大量的 "unknown ConnectionId" 警告日志，SessionManager 引入了 `closed_connections` Tombstone 机制和未知连接的警告限流机制（Rate Limit）。移除的 session 会在一段时间内进入墓碑状态，遇到属于它的迟到包仅作 debug 级忽略处理。
+
 *   **Graceful Close (FIN):** When the local TCP socket reads EOF (0 bytes), the application sends a `Close` packet (Reason: EOF). The peer receives this, writes pending ordered data to its TCP socket, and then shuts down the write half of the TCP stream.
 *   **Forceful Close (RST):** If maximum retransmissions are hit, or an internal error occurs, a `Close` packet (Reason: Error) is sent, and all state for `connection_id` is immediately dropped.
 
