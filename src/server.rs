@@ -89,6 +89,18 @@ pub async fn run_udp(
 
     let connection_table = Arc::new(RwLock::new(ConnectionTable::new()));
     let session_manager = ServerSessionManager::new();
+    let session_mgr_sweep = session_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            session_mgr_sweep
+                .sweep_idle_sessions(
+                    std::time::Instant::now(),
+                    crate::constants::SESSION_IDLE_TIMEOUT,
+                )
+                .await;
+        }
+    });
 
     let mut buf = vec![0u8; 65536];
 
@@ -185,6 +197,7 @@ pub async fn run_udp(
                                             if let Some(session) =
                                                 session_mgr_clone.lookup(&conn_id).await
                                             {
+                                                session.touch();
                                                 let send_state_arc = session.send_state.clone();
                                                 let close_notify = session.close_notify.clone();
                                                 let peer_addr = session.peer_addr;
@@ -555,6 +568,7 @@ pub async fn run_udp(
                             );
 
                             if let Some(session) = session_mgr_clone.lookup(&conn_id).await {
+                                session.touch();
                                 {
                                     let mut state = session.send_state.lock().await;
                                     state.handle_ack(packet.header.ack);
@@ -601,6 +615,7 @@ pub async fn run_udp(
                                 Ok(plaintext) => {
                                     if let Some(session) = session_mgr_clone.lookup(&conn_id).await
                                     {
+                                        session.touch();
                                         let sequence = packet.header.sequence;
 
                                         // Pass to ReceiveState
@@ -610,6 +625,7 @@ pub async fn run_udp(
                                         };
 
                                         for payload in delivered_payloads {
+                                            session.touch();
                                             if let Err(e) = session.sender.send(payload).await {
                                                 tracing::warn!(
                                                     "Failed to forward data to session writer task: {}",
@@ -886,6 +902,18 @@ pub async fn run_tcp(
 
     let connection_table = Arc::new(RwLock::new(ConnectionTable::new()));
     let session_manager = ServerSessionManager::new();
+    let session_mgr_sweep = session_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            session_mgr_sweep
+                .sweep_idle_sessions(
+                    std::time::Instant::now(),
+                    crate::constants::SESSION_IDLE_TIMEOUT,
+                )
+                .await;
+        }
+    });
 
     loop {
         match listener.accept().await {
@@ -1446,6 +1474,7 @@ pub async fn run_tcp(
                                                     if let Some(session) =
                                                         session_mgr_c.lookup(&conn_id).await
                                                     {
+                                                        session.touch();
                                                         {
                                                             let mut state =
                                                                 session.send_state.lock().await;
@@ -1501,6 +1530,7 @@ pub async fn run_tcp(
                                                             if let Some(session) =
                                                                 session_mgr_c.lookup(&conn_id).await
                                                             {
+                                                                session.touch();
                                                                 let sequence =
                                                                     packet.header.sequence;
 

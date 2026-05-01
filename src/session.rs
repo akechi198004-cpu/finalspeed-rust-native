@@ -104,6 +104,26 @@ impl Default for ClientSessionManager {
 }
 
 impl ClientSessionManager {
+    pub async fn sweep_idle_sessions(&self, now: Instant, idle_timeout: std::time::Duration) {
+        let mut to_remove = Vec::new();
+        {
+            let map = self.sessions.read().await;
+            for (id, handle) in map.iter() {
+                if handle.is_idle(now, idle_timeout) {
+                    to_remove.push(*id);
+                }
+            }
+        }
+
+        for id in to_remove {
+            if let Some(_handle) = self.remove(&id).await {
+                tracing::debug!(
+                    "ClientSessionManager sweep: session idle timeout exceeded, removing Conn({})",
+                    id.0
+                );
+            }
+        }
+    }
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -166,27 +186,6 @@ impl ClientSessionManager {
         handle
     }
 
-    pub async fn sweep_idle_sessions(&self, now: Instant, idle_timeout: std::time::Duration) {
-        let mut to_remove = Vec::new();
-        {
-            let map = self.sessions.read().await;
-            for (id, handle) in map.iter() {
-                if handle.is_idle(now, idle_timeout) {
-                    to_remove.push(*id);
-                }
-            }
-        }
-
-        for id in to_remove {
-            if let Some(_handle) = self.remove(&id).await {
-                tracing::debug!(
-                    "ClientSessionManager sweep: session idle timeout exceeded, removing Conn({})",
-                    id.0
-                );
-            }
-        }
-    }
-
     pub async fn check_unknown(&self, id: &ConnectionId) -> UnknownState {
         let now = Instant::now();
 
@@ -226,6 +225,26 @@ impl Default for ServerSessionManager {
 }
 
 impl ServerSessionManager {
+    pub async fn sweep_idle_sessions(&self, now: Instant, idle_timeout: std::time::Duration) {
+        let mut to_remove = Vec::new();
+        {
+            let map = self.sessions.read().await;
+            for (id, handle) in map.iter() {
+                if handle.is_idle(now, idle_timeout) {
+                    to_remove.push(*id);
+                }
+            }
+        }
+
+        for id in to_remove {
+            if let Some(_handle) = self.remove(&id).await {
+                tracing::debug!(
+                    "ServerSessionManager sweep: session idle timeout exceeded, removing Conn({})",
+                    id.0
+                );
+            }
+        }
+    }
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
