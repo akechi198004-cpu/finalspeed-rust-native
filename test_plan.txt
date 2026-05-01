@@ -1,8 +1,0 @@
-1. Update `SessionManager` structs in `src/session.rs` to include `closed_connections` and `unknown_seen` hashmaps, or create a common `SessionTracker` component for them.
-2. Add rate limiting logic to `SessionManager` for unknown connection_ids.
-3. Update `ClientSessionManager::remove` and `ServerSessionManager::remove` to add the `ConnectionId` to the tombstone list.
-4. In `client.rs` and `server.rs`, when a session is not found in `lookup`:
-   - Ask `SessionManager` if it's recently closed. If so, `tracing::debug!("Dropping late packet for recently closed ConnectionId: {}", conn_id);`.
-   - Ask `SessionManager` if it's an unknown connection rate-limited. If not rate-limited, `tracing::warn!("Received packet for unknown ConnectionId: {}", conn_id);`. If rate-limited, `tracing::debug!("Dropping repeated packet for unknown ConnectionId: {}", conn_id);`.
-5. Check retransmission tasks and close notify. When `max retransmissions exceeded`, `close_notify.notify_waiters();` is already called in some places. Check `client.rs` and `server.rs`.
-6. Write tests in `src/session.rs` and potentially elsewhere.

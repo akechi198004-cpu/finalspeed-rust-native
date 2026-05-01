@@ -422,19 +422,15 @@ pub async fn run_udp(
                                         session_mgr_clone
                                             .insert_pending(
                                                 conn_id,
-                                                SessionHandle {
-                                                    sender: tx,
-                                                    state: SessionState::Pending,
-                                                    send_state: Arc::new(Mutex::new(
-                                                        SendState::new(1024),
-                                                    )),
-                                                    receive_state: Arc::new(Mutex::new(
-                                                        ReceiveState::new(1024),
-                                                    )),
-                                                    window_notify: Arc::new(Notify::new()),
-                                                    close_notify: Arc::new(Notify::new()),
-                                                    peer_addr: server_addr,
-                                                },
+                                                SessionHandle::new(
+                                                    tx,
+                                                    SessionState::Pending,
+                                                    Arc::new(Mutex::new(SendState::new(1024))),
+                                                    Arc::new(Mutex::new(ReceiveState::new(1024))),
+                                                    Arc::new(Notify::new()),
+                                                    Arc::new(Notify::new()),
+                                                    server_addr,
+                                                ),
                                                 hs_tx,
                                             )
                                             .await;
@@ -458,7 +454,7 @@ pub async fn run_udp(
 
                                                     // Wait for handshake with a 5-second timeout
                                                     let handshake_result = tokio::time::timeout(
-                                                        std::time::Duration::from_secs(5),
+                                                        crate::constants::HANDSHAKE_TIMEOUT,
                                                         hs_rx,
                                                     )
                                                     .await;
@@ -491,7 +487,7 @@ pub async fn run_udp(
                                                                 tokio::spawn(async move {
                                                                     loop {
                                                                         tokio::select! {
-                                                                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                            _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                 let now = std::time::Instant::now();
                                                                                 let mut to_retransmit = Vec::new();
                                                                                 let mut failed = false;
@@ -870,19 +866,17 @@ pub async fn run_udp(
                                             session_mgr_inner
                                                 .insert_pending(
                                                     conn_id,
-                                                    SessionHandle {
-                                                        sender: tx,
-                                                        state: SessionState::Pending,
-                                                        send_state: Arc::new(Mutex::new(
-                                                            SendState::new(1024),
-                                                        )),
-                                                        receive_state: Arc::new(Mutex::new(
-                                                            ReceiveState::new(1024),
-                                                        )),
-                                                        window_notify: Arc::new(Notify::new()),
-                                                        close_notify: Arc::new(Notify::new()),
-                                                        peer_addr: server_addr_clone,
-                                                    },
+                                                    SessionHandle::new(
+                                                        tx,
+                                                        SessionState::Pending,
+                                                        Arc::new(Mutex::new(SendState::new(1024))),
+                                                        Arc::new(Mutex::new(ReceiveState::new(
+                                                            1024,
+                                                        ))),
+                                                        Arc::new(Notify::new()),
+                                                        Arc::new(Notify::new()),
+                                                        server_addr_clone,
+                                                    ),
                                                     hs_tx,
                                                 )
                                                 .await;
@@ -907,7 +901,7 @@ pub async fn run_udp(
 
                                                         let handshake_result =
                                                             tokio::time::timeout(
-                                                                std::time::Duration::from_secs(5),
+                                                                crate::constants::HANDSHAKE_TIMEOUT,
                                                                 hs_rx,
                                                             )
                                                             .await;
@@ -943,7 +937,7 @@ pub async fn run_udp(
                                                                     tokio::spawn(async move {
                                                                         loop {
                                                                             tokio::select! {
-                                                                                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                                _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                     let now = std::time::Instant::now();
                                                                                     let mut to_retransmit = Vec::new();
                                                                                     let mut failed = false;
@@ -1639,19 +1633,15 @@ pub async fn run_tcp(
                                         session_mgr_clone
                                             .insert_pending(
                                                 conn_id,
-                                                SessionHandle {
-                                                    sender: s_tx,
-                                                    state: SessionState::Pending,
-                                                    send_state: Arc::new(Mutex::new(
-                                                        SendState::new(1024),
-                                                    )),
-                                                    receive_state: Arc::new(Mutex::new(
-                                                        ReceiveState::new(1024),
-                                                    )),
-                                                    window_notify: Arc::new(Notify::new()),
-                                                    close_notify: Arc::new(Notify::new()),
-                                                    peer_addr: server_addr,
-                                                },
+                                                SessionHandle::new(
+                                                    s_tx,
+                                                    SessionState::Pending,
+                                                    Arc::new(Mutex::new(SendState::new(1024))),
+                                                    Arc::new(Mutex::new(ReceiveState::new(1024))),
+                                                    Arc::new(Notify::new()),
+                                                    Arc::new(Notify::new()),
+                                                    server_addr,
+                                                ),
                                                 hs_tx,
                                             )
                                             .await;
@@ -1673,7 +1663,7 @@ pub async fn run_tcp(
                                                     );
 
                                                     let handshake_result = tokio::time::timeout(
-                                                        std::time::Duration::from_secs(5),
+                                                        crate::constants::HANDSHAKE_TIMEOUT,
                                                         hs_rx,
                                                     )
                                                     .await;
@@ -1703,7 +1693,7 @@ pub async fn run_tcp(
                                                                 tokio::spawn(async move {
                                                                     loop {
                                                                         tokio::select! {
-                                                                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                            _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                 let now = std::time::Instant::now();
                                                                                 let mut to_retransmit = Vec::new();
                                                                                 let mut failed = false;
@@ -2052,19 +2042,17 @@ pub async fn run_tcp(
                                             session_mgr_inner
                                                 .insert_pending(
                                                     conn_id,
-                                                    SessionHandle {
-                                                        sender: s_tx,
-                                                        state: SessionState::Pending,
-                                                        send_state: Arc::new(Mutex::new(
-                                                            SendState::new(1024),
-                                                        )),
-                                                        receive_state: Arc::new(Mutex::new(
-                                                            ReceiveState::new(1024),
-                                                        )),
-                                                        window_notify: Arc::new(Notify::new()),
-                                                        close_notify: Arc::new(Notify::new()),
-                                                        peer_addr: server_addr, // The peer_addr in session_mgr isn't strictly used for TCP since we route by channel, but required
-                                                    },
+                                                    SessionHandle::new(
+                                                        s_tx,
+                                                        SessionState::Pending,
+                                                        Arc::new(Mutex::new(SendState::new(1024))),
+                                                        Arc::new(Mutex::new(ReceiveState::new(
+                                                            1024,
+                                                        ))),
+                                                        Arc::new(Notify::new()),
+                                                        Arc::new(Notify::new()),
+                                                        server_addr,
+                                                    ),
                                                     hs_tx,
                                                 )
                                                 .await;
@@ -2089,7 +2077,7 @@ pub async fn run_tcp(
 
                                                         let handshake_result =
                                                             tokio::time::timeout(
-                                                                std::time::Duration::from_secs(5),
+                                                                crate::constants::HANDSHAKE_TIMEOUT,
                                                                 hs_rx,
                                                             )
                                                             .await;
@@ -2122,7 +2110,7 @@ pub async fn run_tcp(
                                                                     tokio::spawn(async move {
                                                                         loop {
                                                                             tokio::select! {
-                                                                                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                                _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                     let now = std::time::Instant::now();
                                                                                     let mut to_retransmit = Vec::new();
                                                                                     let mut failed = false;

@@ -182,7 +182,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_greeting_success() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let (port, _) = spawn_test_server().await;
             let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -201,7 +201,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_greeting_unsupported_version() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let (port, _) = spawn_test_server().await;
             let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -224,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_greeting_unsupported_method() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let (port, _) = spawn_test_server().await;
             let mut client = TcpStream::connect(format!("127.0.0.1:{}", port))
                 .await
@@ -249,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_request_ipv4() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let handle = tokio::spawn(async move {
@@ -280,7 +280,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_request_domain() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let handle = tokio::spawn(async move {
@@ -308,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socks5_request_unsupported_cmd() {
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::time::timeout(crate::constants::HANDSHAKE_TIMEOUT, async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let handle = tokio::spawn(async move {

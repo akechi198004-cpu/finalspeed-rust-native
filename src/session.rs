@@ -14,11 +14,8 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{RwLock, mpsc, oneshot};
-
-const TOMBSTONE_TTL: Duration = Duration::from_secs(60);
-const WARNING_RATE_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownState {
@@ -46,6 +43,44 @@ pub struct SessionHandle {
     pub window_notify: Arc<Notify>,
     pub close_notify: Arc<Notify>,
     pub peer_addr: SocketAddr,
+    last_activity: Arc<std::sync::Mutex<Instant>>,
+}
+
+impl SessionHandle {
+    pub fn new(
+        sender: mpsc::Sender<Bytes>,
+        state: SessionState,
+        send_state: Arc<Mutex<SendState>>,
+        receive_state: Arc<Mutex<ReceiveState>>,
+        window_notify: Arc<Notify>,
+        close_notify: Arc<Notify>,
+        peer_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            sender,
+            state,
+            send_state,
+            receive_state,
+            window_notify,
+            close_notify,
+            peer_addr,
+            last_activity: Arc::new(std::sync::Mutex::new(Instant::now())),
+        }
+    }
+
+    pub fn touch(&self) {
+        if let Ok(mut lock) = self.last_activity.lock() {
+            *lock = Instant::now();
+        }
+    }
+
+    pub fn last_activity(&self) -> Instant {
+        *self.last_activity.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn is_idle(&self, now: Instant, timeout: std::time::Duration) -> bool {
+        now.duration_since(self.last_activity()) > timeout
+    }
 }
 
 /// Used during connection establishment to await Ack/Error Handshakes
@@ -131,19 +166,41 @@ impl ClientSessionManager {
         handle
     }
 
+    pub async fn sweep_idle_sessions(&self, now: Instant, idle_timeout: std::time::Duration) {
+        let mut to_remove = Vec::new();
+        {
+            let map = self.sessions.read().await;
+            for (id, handle) in map.iter() {
+                if handle.is_idle(now, idle_timeout) {
+                    to_remove.push(*id);
+                }
+            }
+        }
+
+        for id in to_remove {
+            if let Some(_handle) = self.remove(&id).await {
+                tracing::debug!(
+                    "ClientSessionManager sweep: session idle timeout exceeded, removing Conn({})",
+                    id.0
+                );
+            }
+        }
+    }
+
     pub async fn check_unknown(&self, id: &ConnectionId) -> UnknownState {
         let now = Instant::now();
 
         {
             let mut closed_map = self.closed_connections.write().await;
-            closed_map.retain(|_, v| now.duration_since(*v) < TOMBSTONE_TTL);
+            closed_map.retain(|_, v| now.duration_since(*v) < crate::constants::TOMBSTONE_TTL);
             if closed_map.contains_key(id) {
                 return UnknownState::RecentlyClosed;
             }
         }
 
         let mut unknown_map = self.unknown_seen.write().await;
-        unknown_map.retain(|_, v| now.duration_since(*v) < WARNING_RATE_LIMIT);
+        unknown_map
+            .retain(|_, v| now.duration_since(*v) < crate::constants::UNKNOWN_WARN_RATE_LIMIT);
 
         if unknown_map.contains_key(id) {
             UnknownState::RateLimited
@@ -206,14 +263,15 @@ impl ServerSessionManager {
 
         {
             let mut closed_map = self.closed_connections.write().await;
-            closed_map.retain(|_, v| now.duration_since(*v) < TOMBSTONE_TTL);
+            closed_map.retain(|_, v| now.duration_since(*v) < crate::constants::TOMBSTONE_TTL);
             if closed_map.contains_key(id) {
                 return UnknownState::RecentlyClosed;
             }
         }
 
         let mut unknown_map = self.unknown_seen.write().await;
-        unknown_map.retain(|_, v| now.duration_since(*v) < WARNING_RATE_LIMIT);
+        unknown_map
+            .retain(|_, v| now.duration_since(*v) < crate::constants::UNKNOWN_WARN_RATE_LIMIT);
 
         if unknown_map.contains_key(id) {
             UnknownState::RateLimited
@@ -265,15 +323,15 @@ mod tests {
         // Add to manager and remove it -> RecentlyClosed
         let (tx, _) = mpsc::channel(1);
         let (hs_tx, _) = oneshot::channel();
-        let handle = SessionHandle {
-            sender: tx,
-            state: SessionState::Established,
-            send_state: Arc::new(Mutex::new(SendState::new(1024))),
-            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
-            window_notify: Arc::new(Notify::new()),
-            close_notify: Arc::new(Notify::new()),
-            peer_addr: "127.0.0.1:8080".parse().unwrap(),
-        };
+        let handle = SessionHandle::new(
+            tx,
+            SessionState::Established,
+            Arc::new(Mutex::new(SendState::new(1024))),
+            Arc::new(Mutex::new(ReceiveState::new(1024))),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            "127.0.0.1:8080".parse().unwrap(),
+        );
 
         manager.insert_pending(id, handle, hs_tx).await;
         manager.remove(&id).await;
@@ -288,15 +346,15 @@ mod tests {
         let (tx, _) = mpsc::channel(1);
         let (hs_tx, hs_rx) = oneshot::channel();
         let id = ConnectionId(1);
-        let handle = SessionHandle {
-            sender: tx,
-            state: SessionState::Pending,
-            send_state: Arc::new(Mutex::new(SendState::new(1024))),
-            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
-            window_notify: Arc::new(Notify::new()),
-            close_notify: Arc::new(Notify::new()),
-            peer_addr: "127.0.0.1:8080".parse().unwrap(),
-        };
+        let handle = SessionHandle::new(
+            tx,
+            SessionState::Pending,
+            Arc::new(Mutex::new(SendState::new(1024))),
+            Arc::new(Mutex::new(ReceiveState::new(1024))),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            "127.0.0.1:8080".parse().unwrap(),
+        );
 
         manager.insert_pending(id, handle.clone(), hs_tx).await;
 
@@ -324,15 +382,15 @@ mod tests {
         let manager = ServerSessionManager::new();
         let (tx, _) = mpsc::channel(1);
         let id = ConnectionId(2);
-        let handle = SessionHandle {
-            sender: tx,
-            state: SessionState::Established,
-            send_state: Arc::new(Mutex::new(SendState::new(1024))),
-            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
-            window_notify: Arc::new(Notify::new()),
-            close_notify: Arc::new(Notify::new()),
-            peer_addr: "127.0.0.1:8080".parse().unwrap(),
-        };
+        let handle = SessionHandle::new(
+            tx,
+            SessionState::Established,
+            Arc::new(Mutex::new(SendState::new(1024))),
+            Arc::new(Mutex::new(ReceiveState::new(1024))),
+            Arc::new(Notify::new()),
+            Arc::new(Notify::new()),
+            "127.0.0.1:8080".parse().unwrap(),
+        );
 
         manager.insert(id, handle.clone()).await;
 
