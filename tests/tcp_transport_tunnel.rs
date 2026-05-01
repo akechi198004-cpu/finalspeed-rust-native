@@ -1,27 +1,20 @@
+use fspeed_rs::cli::TransportMode;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, TcpStream};
 
 async fn find_free_tcp_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     listener.local_addr().unwrap().port()
 }
 
-async fn find_free_udp_port() -> u16 {
-    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    socket.local_addr().unwrap().port()
-}
-
 #[tokio::test]
-async fn test_reliable_tunnel() {
+async fn test_tcp_transport_tunnel_loopback() {
     tracing_subscriber::fmt::try_init().ok();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        // We will start the echo server, start fspeed-rs server and client, and run data through it.
-        // It's tricky to directly inject network loss here without proxying the UDP socket,
-        // but we verify the sliding window and timeout components integrated don't block normal operations.
-
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // 1. Start echo server
         let echo_port = find_free_tcp_port().await;
         let echo_addr = format!("127.0.0.1:{}", echo_port);
         let echo_listener = TcpListener::bind(&echo_addr).await.unwrap();
@@ -31,7 +24,7 @@ async fn test_reliable_tunnel() {
                 let mut buf = vec![0; 1024];
                 while let Ok(n) = stream.read(&mut buf).await {
                     if n == 0 {
-                        break;
+                        break; // EOF
                     }
                     if stream.write_all(&buf[..n]).await.is_err() {
                         break;
@@ -40,7 +33,8 @@ async fn test_reliable_tunnel() {
             }
         });
 
-        let server_port = find_free_udp_port().await;
+        // 2. Start fspeed-rs server
+        let server_port = find_free_tcp_port().await;
         let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
         let allowlist = vec![echo_addr.parse().unwrap()];
         let server_task = tokio::spawn(async move {
@@ -48,7 +42,7 @@ async fn test_reliable_tunnel() {
                 server_addr,
                 "test123".to_string(),
                 Some(allowlist),
-                fspeed_rs::cli::TransportMode::Udp,
+                TransportMode::Tcp,
             )
             .await
             .unwrap();
@@ -56,19 +50,17 @@ async fn test_reliable_tunnel() {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let local_port = find_free_tcp_port().await;
-        let map = fspeed_rs::config::PortMap {
-            local: format!("127.0.0.1:{}", local_port).parse().unwrap(),
-            target: echo_addr.clone(),
-        };
+        // 3. Start fspeed-rs client
+        let socks_port = find_free_tcp_port().await;
+        let socks_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
 
         let client_task = tokio::spawn(async move {
             fspeed_rs::client::run(
                 server_addr.to_string(),
                 "test123".to_string(),
-                vec![map],
-                None,
-                fspeed_rs::cli::TransportMode::Udp,
+                vec![],
+                Some(socks_addr),
+                TransportMode::Tcp,
             )
             .await
             .unwrap();
@@ -76,27 +68,41 @@ async fn test_reliable_tunnel() {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let mut client_stream = TcpStream::connect(format!("127.0.0.1:{}", local_port))
+        // 4. Connect to local SOCKS5 listener
+        let mut client_stream = TcpStream::connect(socks_addr).await.unwrap();
+
+        // 5. Send SOCKS5 greeting
+        client_stream.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+        let mut response = [0u8; 2];
+        client_stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [0x05, 0x00]); // NO AUTH
+
+        // 6. Send SOCKS5 CONNECT request to echo_addr
+        client_stream
+            .write_all(&[0x05, 0x01, 0x00, 0x01])
             .await
             .unwrap();
+        client_stream.write_all(&[127, 0, 0, 1]).await.unwrap(); // IPv4
+        client_stream
+            .write_all(&echo_port.to_be_bytes())
+            .await
+            .unwrap(); // Port
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut response = [0u8; 10];
+        client_stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(response[0], 0x05); // Version 5
+        assert_eq!(response[1], 0x00); // Success
 
-        // Send multiple messages to test reliable ordering sequence
-        let message1 = b"hello part 1, ";
-        let message2 = b"hello part 2";
-        client_stream.write_all(message1).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await; // give time for first packet
-        client_stream.write_all(message2).await.unwrap();
+        // 7. Write data
+        let message = b"hello tcp transport";
+        client_stream.write_all(message).await.unwrap();
 
-        let mut buf = vec![0; message1.len() + message2.len()];
+        // 8. Read echo response
+        let mut buf = vec![0; message.len()];
         client_stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, message);
 
-        let mut expected = message1.to_vec();
-        expected.extend_from_slice(message2);
-
-        assert_eq!(&buf, &expected);
-
+        // Cleanup
         echo_task.abort();
         server_task.abort();
         client_task.abort();

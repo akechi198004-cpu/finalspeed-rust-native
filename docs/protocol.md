@@ -120,3 +120,15 @@ timestamp_ms=1682390884000
 - **Adaptive RTO**: 将超时重发延迟从常量固定值升级为通过网络抖动计算估量。
 - **Congestion Control**: 标准的拥塞控制避碰和控制避免网络雪崩。
 - **MTU Handling**: 实现 MTU 的自适应拆包控制。
+## TCP Transport Framing
+
+When using the TCP transport mode (`--transport tcp`), packets are encapsulated into length-prefixed frames. The framing format is as follows:
+
+```
+[Length: 4 bytes big-endian][Encoded Packet Bytes]
+```
+
+- **Length**: The total size of the encoded packet in bytes.
+- **Encoded Packet Bytes**: The serialized payload or message.
+
+The maximum frame size is 2MB. Exceeding this limit will result in an error.

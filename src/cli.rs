@@ -15,6 +15,13 @@ pub struct Cli {
     pub command: Commands,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Default)]
+pub enum TransportMode {
+    #[default]
+    Udp,
+    Tcp,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Start the server to accept incoming tunnel connections
@@ -30,6 +37,10 @@ pub enum Commands {
         /// Optional comma-separated list of allowed target addresses (e.g., 127.0.0.1:22,127.0.0.1:80)
         #[arg(long, value_delimiter = ',')]
         allow: Option<Vec<SocketAddr>>,
+
+        /// Transport mode to use (udp or tcp)
+        #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
+        transport: TransportMode,
     },
 
     /// Start the client to forward local TCP connections to the server
@@ -50,6 +61,10 @@ pub enum Commands {
         /// Local SOCKS5 listener address (e.g., 127.0.0.1:1080)
         #[arg(long, required = false)]
         socks5: Option<SocketAddr>,
+
+        /// Transport mode to use (udp or tcp)
+        #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
+        transport: TransportMode,
     },
 }
 

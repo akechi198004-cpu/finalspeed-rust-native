@@ -167,3 +167,7 @@ The Minimum Viable Product focuses strictly on:
 2.  **Phase 2:** UDP transport skeleton and basic packet routing.
 3.  **Phase 3:** ACK / retransmission / sliding window runtime.
 4.  **Phase 4:** TCP port mapping.
+
+## TCP Transport Abstract
+
+The TCP transport mode maintains the core packet-processing pipeline by utilizing `mpsc::channel` for asynchronous packet writing and `tokio::spawn` to manage concurrent frame reading and decoding per TCP stream. This enables maximum code reuse across UDP and TCP modes without requiring duplicate implementation of AEAD encryption, reliability, SOCKS5 multiplexing, or handshake logic.
