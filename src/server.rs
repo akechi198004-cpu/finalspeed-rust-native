@@ -167,19 +167,17 @@ pub async fn run_udp(
                                             session_mgr_clone
                                                 .insert(
                                                     conn_id,
-                                                    SessionHandle {
-                                                        sender: tx,
-                                                        state: SessionState::Established,
-                                                        send_state: Arc::new(Mutex::new(
-                                                            SendState::new(1024),
-                                                        )),
-                                                        receive_state: Arc::new(Mutex::new(
-                                                            ReceiveState::new(1024),
-                                                        )),
-                                                        window_notify: Arc::new(Notify::new()),
-                                                        close_notify: Arc::new(Notify::new()),
-                                                        peer_addr: peer,
-                                                    },
+                                                    SessionHandle::new(
+                                                        tx,
+                                                        SessionState::Established,
+                                                        Arc::new(Mutex::new(SendState::new(1024))),
+                                                        Arc::new(Mutex::new(ReceiveState::new(
+                                                            1024,
+                                                        ))),
+                                                        Arc::new(Notify::new()),
+                                                        Arc::new(Notify::new()),
+                                                        peer,
+                                                    ),
                                                 )
                                                 .await;
 
@@ -196,7 +194,7 @@ pub async fn run_udp(
                                                 tokio::spawn(async move {
                                                     loop {
                                                         tokio::select! {
-                                                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                            _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                 let now = std::time::Instant::now();
                                                                 let mut to_retransmit = Vec::new();
                                                                 let mut failed = false;
@@ -1001,15 +999,15 @@ pub async fn run_tcp(
 
                                                                     session_mgr_c.insert(
                                                                         conn_id,
-                                                                        SessionHandle {
-                                                                            sender: s_tx,
-                                                                            state: SessionState::Established,
-                                                                            send_state: Arc::new(Mutex::new(SendState::new(1024))),
-                                                                            receive_state: Arc::new(Mutex::new(ReceiveState::new(1024))),
-                                                                            window_notify: Arc::new(Notify::new()),
-                                                                            close_notify: Arc::new(Notify::new()),
-                                                                            peer_addr: peer,
-                                                                        },
+                                                                        SessionHandle::new(
+                                                                            s_tx,
+                                                                            SessionState::Established,
+                                                                            Arc::new(Mutex::new(SendState::new(1024))),
+                                                                            Arc::new(Mutex::new(ReceiveState::new(1024))),
+                                                                            Arc::new(Notify::new()),
+                                                                            Arc::new(Notify::new()),
+                                                                            peer,
+                                                                        ),
                                                                     ).await;
 
                                                                     // For TCP transport, we still spawn the retransmission task to keep code minimally changed,
@@ -1034,7 +1032,7 @@ pub async fn run_tcp(
                                                                         tokio::spawn(async move {
                                                                             loop {
                                                                                 tokio::select! {
-                                                                                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                                                                                    _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                         let now = std::time::Instant::now();
                                                                                         let mut to_retransmit = Vec::new();
                                                                                         let mut failed = false;
