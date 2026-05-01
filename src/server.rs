@@ -770,119 +770,6 @@ pub async fn run_udp(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::ConnectionId;
-    use bytes::Bytes;
-
-    use crate::crypto::{build_aad, current_timestamp_ms, derive_key, encrypt_payload};
-
-    fn create_encrypted_open_packet(target_addr: &str, secret: &str, valid_ts: bool) -> Packet {
-        let ts = if valid_ts {
-            current_timestamp_ms()
-        } else {
-            current_timestamp_ms() - 600_000 // Expired
-        };
-        let payload_str = format!("target={}\ntimestamp_ms={}", target_addr, ts);
-
-        let mut packet = Packet::try_new(
-            PacketType::OpenConnection,
-            FLAG_ENCRYPTED,
-            ConnectionId(1),
-            0,
-            0,
-            0,
-            Bytes::new(),
-        )
-        .unwrap();
-
-        let key = derive_key(secret);
-        let aad = build_aad(&packet.header);
-        let encrypted = encrypt_payload(payload_str.as_bytes(), &key, &aad).unwrap();
-
-        packet.payload = encrypted.clone();
-        packet.header.payload_len = encrypted.len() as u16;
-        packet
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_success() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let target_addr = listener.local_addr().unwrap();
-
-        let packet = create_encrypted_open_packet(&target_addr.to_string(), "test123", true);
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), target_addr.to_string());
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_missing_flag() {
-        let mut packet = create_encrypted_open_packet("127.0.0.1:80", "test123", true);
-        packet.header.flags = 0; // Remove flag
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Missing FLAG_ENCRYPTED");
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_secret_mismatch() {
-        // Encrypt with wrong secret
-        let packet = create_encrypted_open_packet("192.168.1.1:80", "wrong_secret", true);
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_timestamp_expired() {
-        let packet = create_encrypted_open_packet("192.168.1.1:80", "test123", false); // false = expired
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_allowlist_success() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let target_addr = listener.local_addr().unwrap();
-
-        let packet = create_encrypted_open_packet(&target_addr.to_string(), "test123", true);
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result =
-            validate_open_connection_packet(&packet, peer_addr, "test123", Some(&[target_addr]))
-                .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), target_addr.to_string());
-    }
-
-    #[tokio::test]
-    async fn test_validate_open_connection_allowlist_reject() {
-        let allowed_addr: SocketAddr = "192.168.1.1:80".parse().unwrap();
-        let packet = create_encrypted_open_packet("10.0.0.1:22", "test123", true);
-        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-
-        let result =
-            validate_open_connection_packet(&packet, peer_addr, "test123", Some(&[allowed_addr]))
-                .await;
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Target not allowed");
-    }
-}
 #[allow(clippy::collapsible_if)]
 pub async fn run_tcp(
     listen: SocketAddr,
@@ -1719,5 +1606,119 @@ pub async fn run_tcp(
                 tracing::warn!("Failed to accept TCP connection: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::ConnectionId;
+    use bytes::Bytes;
+
+    use crate::crypto::{build_aad, current_timestamp_ms, derive_key, encrypt_payload};
+
+    fn create_encrypted_open_packet(target_addr: &str, secret: &str, valid_ts: bool) -> Packet {
+        let ts = if valid_ts {
+            current_timestamp_ms()
+        } else {
+            current_timestamp_ms() - 600_000 // Expired
+        };
+        let payload_str = format!("target={}\ntimestamp_ms={}", target_addr, ts);
+
+        let mut packet = Packet::try_new(
+            PacketType::OpenConnection,
+            FLAG_ENCRYPTED,
+            ConnectionId(1),
+            0,
+            0,
+            0,
+            Bytes::new(),
+        )
+        .unwrap();
+
+        let key = derive_key(secret);
+        let aad = build_aad(&packet.header);
+        let encrypted = encrypt_payload(payload_str.as_bytes(), &key, &aad).unwrap();
+
+        packet.payload = encrypted.clone();
+        packet.header.payload_len = encrypted.len() as u16;
+        packet
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = listener.local_addr().unwrap();
+
+        let packet = create_encrypted_open_packet(&target_addr.to_string(), "test123", true);
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), target_addr.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_missing_flag() {
+        let mut packet = create_encrypted_open_packet("127.0.0.1:80", "test123", true);
+        packet.header.flags = 0; // Remove flag
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Missing FLAG_ENCRYPTED");
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_secret_mismatch() {
+        // Encrypt with wrong secret
+        let packet = create_encrypted_open_packet("192.168.1.1:80", "wrong_secret", true);
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_timestamp_expired() {
+        let packet = create_encrypted_open_packet("192.168.1.1:80", "test123", false); // false = expired
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result = validate_open_connection_packet(&packet, peer_addr, "test123", None).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_allowlist_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = listener.local_addr().unwrap();
+
+        let packet = create_encrypted_open_packet(&target_addr.to_string(), "test123", true);
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result =
+            validate_open_connection_packet(&packet, peer_addr, "test123", Some(&[target_addr]))
+                .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), target_addr.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_validate_open_connection_allowlist_reject() {
+        let allowed_addr: SocketAddr = "192.168.1.1:80".parse().unwrap();
+        let packet = create_encrypted_open_packet("10.0.0.1:22", "test123", true);
+        let peer_addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+
+        let result =
+            validate_open_connection_packet(&packet, peer_addr, "test123", Some(&[allowed_addr]))
+                .await;
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Target not allowed");
     }
 }
