@@ -155,3 +155,10 @@ curl --socks5-hostname 127.0.0.1:1080 http://example.com
 **Q: 传输速度慢 / 存在严重丢包，这套协议完全稳定吗？**
 - **重要提醒**：当前版本（Phase 4.3）依然属于前期的基础数据面与加密面（AEAD）验证阶段。**当前版本还不是完整可靠 UDP**。
 - 尽管我们编写了握手同步并前置了核心的 ACK/Retransmission 及 Sliding Window 框架，但尚未被完整耦合到真实连续双发 TCP->UDP 通信逻辑中。当前的 Data 发送是 UDP 不保序单发，若网络剧烈颠簸丢失即丢失，无法进行高级弱网恢复与纠错补偿。未来的版本（Phase 5 及后续）才会实装完整的可靠性加速特性。
+
+## Transport Modes
+
+`fspeed-rs` supports two transport modes for sending packets between the client and server: UDP and TCP. You can choose the transport mode using the `--transport` flag on both the client and server.
+
+- **UDP (Default)**: A pure UDP transport mode where each packet corresponds to a single UDP datagram. This is the primary target for `fspeed-rs` and provides the best performance for accelerating TCP streams.
+- **TCP (Fallback)**: A TCP transport mode where packets are encoded into length-prefixed frames and sent over a TCP connection. Use this mode if your network environment or VPS restricts UDP traffic. Note that TCP transport maintains the reliable runtime and encryption features but does not guarantee the same acceleration effects as UDP transport, as TCP already provides reliable stream transmission.

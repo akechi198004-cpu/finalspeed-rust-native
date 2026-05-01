@@ -17,10 +17,10 @@
 
 目前项目已经完成了基础数据面（basic data plane）转发：
 
-- **基础隧道**：具备完整的 TCP 监听、TCP/UDP 流拆分、UDP 数据封装和连接表的生命周期管理。
+- **基础隧道**：具备完整的 TCP 监听、TCP/UDP 流拆分、UDP 数据封装和连接表的生命周期管理。并支持 TCP Transport Fallback (`--transport tcp`) 模式。
 - **控制原语**：实现了 `OpenConnection` 带有显式握手的双端握手机制解析。支持针对时间戳的安全验证、`allowlist` 服务端目标白名单限制，并具备对端同步回传加密的 Ack/Error 同步机制以阻塞 Client 不发送无用 Data。这为后续支持 SOCKS5 CONNECT 的双向结果传导奠定了基础。
 - **数据加密层**：隧道内部的所有 Payload（包含 OpenConnection、Data、Ack、Error、Close）均已通过基于 `HKDF-SHA256` 衍生的 `ChaCha20-Poly1305` AEAD 算法进行对称加密和认证（AAD 包含 Header）。抓包将无法获得明文目标地址、响应状态以及被承载的 TCP 内容。
-- **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头及 `FLAG_ENCRYPTED` 安全标志。
+- **传输层构建**：UDP datagram 能够完整进行封包与解包，并验证 Magic、Version 等协议报头及 `FLAG_ENCRYPTED` 安全标志。在使用 `--transport tcp` 时，提供长度前缀的 Framing 帧协议支持。
 - **自动验证**：具备基于本地 loopback 的自动集成测试和通过 GitHub Actions (Linux x64 / Windows x64) 运行的 CI 工作流。
 - ⚠️ **当前状态警告**：目前项目已将基础的滑动窗口（Sliding Window）、累计确认（Cumulative Ack）、重传列队（Retransmission）**完整接入**真实的 Data Plane 收发平面。在弱网环境下已具备基本的丢包容忍与乱序重排能力。但需要注意的是，**本协议仍处在实验阶段**，**暂不支持** 高级拥塞控制（Congestion Control）、自适应超时计算（Adaptive RTO）及选择性确认（SACK），在极端环境下可能引发阻塞堆积。**因此依旧不建议应用于任何重资产的生产环境中。**
 
@@ -61,6 +61,19 @@ cargo run --release -- client --server 127.0.0.1:15000 --secret test123 --map 12
 ssh -p 2222 user@127.0.0.1
 ```
 
+### TCP Fallback 模式 (TCP 传输后备)
+*场景：当目标 VPS 无法接受 UDP 流量时，可强制通过 TCP Transport 传输原有协议。该模式使用 Length-prefixed framing，且不破坏现有 SOCKS5/加密及可靠层，但可能失去加速效果。*
+
+**Server (服务端运行):**
+```bash
+cargo run --release -- server --listen 0.0.0.0:15000 --secret test123 --transport tcp
+```
+
+**Client (客户端使用 SOCKS5 代理):**
+```bash
+cargo run --release -- client --server SERVER_IP:15000 --secret test123 --transport tcp --socks5 127.0.0.1:1080
+```
+
 ### SOCKS5 动态代理映射
 *场景：将本地所有的代理流量通过隧道安全传输到服务端并动态请求对应互联网资源。*
 
@@ -85,17 +98,19 @@ curl --socks5-hostname 127.0.0.1:1080 http://example.com
 ## 5. 参数说明 (CLI Parameters)
 
 ### Server 参数
-- `--listen`: 监听的本地 UDP 地址和端口。例如 `0.0.0.0:150`。
+- `--listen`: 监听的本地地址和端口。例如 `0.0.0.0:150`。
 - `--secret`: 隧道接入密码。客户端必须提供一致的密码才能接入建立连接。
 - `--allow`: Server-side target allowlist。限制客户端允许请求连接的白名单目标地址列表。如 `--allow 127.0.0.1:22,127.0.0.1:80`。
+- `--transport`: 指定隧道传输层协议，可选 `udp` 或 `tcp`，默认 `udp`。
 
 ### Client 参数
-- `--server`: 隧道远程服务端的 UDP 地址和端口。例如 `198.51.100.1:150`。
+- `--server`: 隧道远程服务端的地址和端口。例如 `198.51.100.1:150`。
 - `--secret`: 隧道接入密码。需要与服务端配置匹配。
 - `--map`: 静态端口映射规则，格式为 `local_addr:local_port=target_addr:target_port`。
-  - 例如 `127.0.0.1:2222=127.0.0.1:22`，表示把本地 TCP 2222 端口的流量隧道加速转发到目标远端服务 22 端口。支持传入多条规则映射。
+  - 例如 `127.0.0.1:2222=127.0.0.1:22`，表示把本地 TCP 2222 端口的流量隧道转发到目标远端服务 22 端口。支持传入多条规则映射。
 - `--socks5`: 动态代理绑定地址。例如 `127.0.0.1:1080`。支持解析远端 IPv4 及 Domain 域名，SOCKS5 入口仅在客户端有效。
   - *注意：Client 启动至少需要提供一个 `--map` 或 一个 `--socks5` 监听，两者支持组合同时使用。*
+- `--transport`: 指定隧道传输层协议，可选 `udp` 或 `tcp`，默认 `udp`。
 
 ---
 
