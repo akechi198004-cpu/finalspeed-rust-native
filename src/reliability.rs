@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::packet::Packet;
 use bytes::Bytes;
 
-pub const DEFAULT_RTO: Duration = Duration::from_millis(500);
-pub const MAX_RETRANSMIT_COUNT: u32 = 5;
-pub const DEFAULT_SEND_WINDOW: u16 = 1024;
+use crate::constants::{INITIAL_RTO, MAX_RETRANSMISSIONS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -89,9 +87,9 @@ impl SendState {
     ) -> Result<Vec<Packet>, crate::error::FSpeedError> {
         let mut to_retransmit = Vec::new();
         for (_, sent_packet) in self.unacked.iter_mut() {
-            if now.duration_since(sent_packet.sent_at) >= DEFAULT_RTO {
+            if now.duration_since(sent_packet.sent_at) >= INITIAL_RTO {
                 sent_packet.retransmit_count += 1;
-                if sent_packet.retransmit_count > MAX_RETRANSMIT_COUNT {
+                if sent_packet.retransmit_count > MAX_RETRANSMISSIONS {
                     return Err(crate::error::FSpeedError::Decode(
                         "Max retransmissions exceeded".to_string(),
                     ));
@@ -231,13 +229,13 @@ mod tests {
 
         // Before RTO
         let retransmit = send_state
-            .get_timed_out_packets(now + Duration::from_millis(100))
+            .get_timed_out_packets(now + std::time::Duration::from_millis(500))
             .unwrap();
         assert!(retransmit.is_empty());
 
         // After RTO
         let retransmit = send_state
-            .get_timed_out_packets(now + Duration::from_millis(600))
+            .get_timed_out_packets(now + std::time::Duration::from_millis(1500))
             .unwrap();
         assert_eq!(retransmit.len(), 1);
         assert_eq!(send_state.unacked.get(&1).unwrap().retransmit_count, 1);
@@ -249,17 +247,17 @@ mod tests {
         let pkt = create_test_packet(1);
         send_state.save_unacked(1, pkt);
 
-        // Simulate MAX_RETRANSMIT_COUNT + 1 timeouts
+        // Simulate MAX_RETRANSMISSIONS + 1 timeouts
         let mut now = Instant::now();
-        for _ in 0..MAX_RETRANSMIT_COUNT {
-            now += DEFAULT_RTO + Duration::from_millis(1);
+        for _ in 0..MAX_RETRANSMISSIONS {
+            now += INITIAL_RTO + std::time::Duration::from_millis(1);
             let result = send_state.get_timed_out_packets(now);
             assert!(result.is_ok());
             assert_eq!(result.unwrap().len(), 1);
         }
 
         // The next timeout should trigger failure
-        now += DEFAULT_RTO + Duration::from_millis(1);
+        now += INITIAL_RTO + std::time::Duration::from_millis(1);
         let result = send_state.get_timed_out_packets(now);
         assert!(result.is_err());
     }

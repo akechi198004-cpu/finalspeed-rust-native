@@ -53,6 +53,18 @@ pub async fn run_udp(
     let id_generator = Arc::new(ConnectionIdGenerator::new());
     let secret_arc = Arc::new(secret);
     let session_manager = ClientSessionManager::new();
+    let session_mgr_sweep = session_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            session_mgr_sweep
+                .sweep_idle_sessions(
+                    std::time::Instant::now(),
+                    crate::constants::SESSION_IDLE_TIMEOUT,
+                )
+                .await;
+        }
+    });
 
     let mut tasks = vec![];
 
@@ -89,6 +101,7 @@ pub async fn run_udp(
                                                 if let Some(session) =
                                                     session_mgr.lookup(&conn_id).await
                                                 {
+                                                    session.touch();
                                                     let sequence = packet.header.sequence;
 
                                                     // Pass to ReceiveState
@@ -99,6 +112,7 @@ pub async fn run_udp(
                                                     };
 
                                                     for payload in delivered_payloads {
+                                                        session.touch();
                                                         if let Err(e) =
                                                             session.sender.send(payload).await
                                                         {
@@ -207,6 +221,7 @@ pub async fn run_udp(
                                         );
 
                                         if let Some(session) = session_mgr.lookup(&conn_id).await {
+                                            session.touch();
                                             {
                                                 let mut state = session.send_state.lock().await;
                                                 state.handle_ack(packet.header.ack);
@@ -1261,6 +1276,18 @@ pub async fn run_tcp(
     let id_generator = Arc::new(ConnectionIdGenerator::new());
     let secret_arc = Arc::new(secret);
     let session_manager = ClientSessionManager::new();
+    let session_mgr_sweep = session_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            session_mgr_sweep
+                .sweep_idle_sessions(
+                    std::time::Instant::now(),
+                    crate::constants::SESSION_IDLE_TIMEOUT,
+                )
+                .await;
+        }
+    });
 
     let mut tasks = vec![];
 
@@ -1312,6 +1339,7 @@ pub async fn run_tcp(
                                                 if let Some(session) =
                                                     session_mgr.lookup(&conn_id).await
                                                 {
+                                                    session.touch();
                                                     let sequence = packet.header.sequence;
 
                                                     let delivered_payloads = {
@@ -1321,6 +1349,7 @@ pub async fn run_tcp(
                                                     };
 
                                                     for payload in delivered_payloads {
+                                                        session.touch();
                                                         if let Err(e) =
                                                             session.sender.send(payload).await
                                                         {
@@ -1425,6 +1454,7 @@ pub async fn run_tcp(
                                         );
 
                                         if let Some(session) = session_mgr.lookup(&conn_id).await {
+                                            session.touch();
                                             {
                                                 let mut state = session.send_state.lock().await;
                                                 state.handle_ack(packet.header.ack);
