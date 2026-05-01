@@ -1,27 +1,24 @@
-# fspeed-rs Design Notes
+# fspeed-rs 设计笔记（Design Notes）
 
-This document contains earlier design notes. For current implementation status,
-see [docs/current-status.md](current-status.md) and [docs/protocol.md](protocol.md).
+本文档是较早期的设计记录。当前实现状态请优先参考 [docs/current-status.md](current-status.md) 与 [docs/protocol.md](protocol.md)。
 
-The notes below have been lightly corrected where they conflicted with the
-current code, but they should not be treated as the authoritative protocol
-reference.
+下文已对与当前代码冲突的部分做了轻量修正，但不应视为权威协议规范。
 
-## Current Architecture Summary
+## 当前架构摘要
 
-`fspeed-rs` is a Rust-native client/server TCP tunnel built on Tokio.
+`fspeed-rs` 是基于 Tokio 的 Rust 原生 client/server TCP 隧道。
 
-- Server listens with either UDP transport or TCP transport fallback.
-- Client accepts local TCP connections from `--map` listeners and/or a local SOCKS5 listener.
-- UDP transport sends one encoded packet per datagram.
-- TCP transport sends framed encoded packets over a client-to-server TCP stream.
-- Payloads are encrypted with ChaCha20-Poly1305 using an HKDF-SHA256 key derived from `--secret`.
-- Headers are plaintext but authenticated as AEAD AAD.
-- The protocol is self-compatible between Rust client and Rust server only.
+- Server 支持 UDP transport 或 TCP fallback。
+- Client 通过 `--map` 本地监听和/或本地 SOCKS5 监听接收连接。
+- UDP 路径中一个 datagram 对应一个 encoded packet。
+- TCP 路径中通过 client->server TCP stream 发送 framed packet。
+- payload 使用 ChaCha20-Poly1305 加密，key 由 `--secret` 经 HKDF-SHA256 派生。
+- header 保持明文，但通过 AEAD AAD 做完整性认证。
+- 协议当前仅保证 Rust client 与 Rust server 之间自兼容。
 
-## CLI Shape
+## CLI 形态
 
-Server:
+Server：
 
 ```bash
 fspeed-rs server \
@@ -31,7 +28,7 @@ fspeed-rs server \
   --transport udp
 ```
 
-Client with mapping:
+Client（端口映射）：
 
 ```bash
 fspeed-rs client \
@@ -41,7 +38,7 @@ fspeed-rs client \
   --transport udp
 ```
 
-Client with SOCKS5:
+Client（SOCKS5）：
 
 ```bash
 fspeed-rs client \
@@ -51,9 +48,9 @@ fspeed-rs client \
   --transport tcp
 ```
 
-## Packet Model
+## Packet 模型
 
-The current common header is 22 bytes, big-endian:
+当前通用 header 为 22 bytes（big-endian）：
 
 | Offset | Field | Size |
 |---:|---|---:|
@@ -67,68 +64,64 @@ The current common header is 22 bytes, big-endian:
 | 18 | `window` | 2 |
 | 20 | `payload_len` | 2 |
 
-Packet types are `OpenConnection = 1`, `Data = 2`, `Ack = 3`, `Close = 4`, and
-`Error = 5`.
+packet type 定义为 `OpenConnection = 1`、`Data = 2`、`Ack = 3`、`Close = 4`、`Error = 5`。
 
 ## OpenConnection
 
-OpenConnection payloads are encrypted. The current plaintext format after
-decryption is:
+`OpenConnection` payload 为加密内容。解密后当前明文格式：
 
 ```text
 target=127.0.0.1:22
 timestamp_ms=1682390884000
 ```
 
-The shared secret is not sent as a plaintext payload. Old keys such as `secret`,
-`auth`, and `nonce` are rejected by the parser.
+共享 secret 不会以明文 payload 发送。parser 会拒绝旧字段 `secret`、`auth`、`nonce`。
 
-## Reliability Notes
+## 可靠性说明
 
-The current reliability runtime is implemented and connected to the data plane:
+当前可靠性运行时已实现并接入 data plane：
 
-- `SendState` and `ReceiveState` exist.
-- Sequence numbers start at `1`.
-- ACKs are cumulative and use the header `ack` field.
-- Retransmission uses a fixed `1000 ms` RTO.
-- Retransmission scanning runs every `200 ms`.
-- Maximum retransmissions is `20`.
-- Default send/receive window is `1024` packets.
-- TCP and UDP transport paths both start retransmission tasks.
+- 已实现 `SendState` 与 `ReceiveState`；
+- sequence number 从 `1` 开始；
+- ACK 为累计确认，使用 header `ack` 字段；
+- 重传使用固定 `1000 ms` RTO；
+- 重传扫描周期为 `200 ms`；
+- 最大重传次数为 `20`；
+- 默认收发窗口为 `1024` packets；
+- TCP 与 UDP 路径都会启动重传任务。
 
-Current reliability limits:
+当前可靠性限制：
 
-- No SACK.
-- No congestion control.
-- No adaptive RTO.
-- No byte-based TCP-style ACK semantics.
+- 无 SACK；
+- 无拥塞控制；
+- 无自适应 RTO；
+- 无 TCP 式按字节 ACK 语义。
 
-## Session Lifecycle Notes
+## Session 生命周期说明
 
-Both client and server managers implement:
+client 与 server manager 均支持：
 
-- active session maps,
-- `last_activity`,
-- idle sweep every `30 s`,
-- idle timeout after `300 s`,
-- closed-session tombstones with `60 s` TTL,
-- unknown connection warning rate limit of `10 s`.
+- active session map；
+- `last_activity` 更新时间；
+- 每 `30 s` idle sweep；
+- `300 s` idle timeout；
+- 关闭会话 tombstone（TTL `60 s`）；
+- 未知连接告警限速（`10 s` 窗口）。
 
-## Security Notes
+## 安全说明
 
-- ChaCha20-Poly1305 is used for payload encryption.
-- HKDF-SHA256 derives the AEAD key from `--secret`.
-- AAD covers header fields except `payload_len`.
-- Timestamp validation gives basic freshness checking for OpenConnection.
-- There is no replay cache, per-session salt, key rotation, or traffic padding.
+- payload 使用 ChaCha20-Poly1305。
+- AEAD key 由 `--secret` 通过 HKDF-SHA256 派生。
+- AAD 覆盖 header 字段（不含 `payload_len`）。
+- timestamp 校验为 OpenConnection 提供基础新鲜度保护。
+- 当前无 replay cache、per-session salt、key rotation、traffic padding。
 
-## Historical Design Ideas Not Currently Implemented
+## 历史设计想法（当前未实现）
 
-The following ideas may appear in older discussions but are not present in the
-current implementation:
+以下想法可能出现在早期讨论中，但当前代码未实现：
 
-- Plaintext shared-secret payloads.
-- Adaptive RTO.
-- Congestion control.
-- Config-file driven mappings.
-- UDP ASSOCIATE support for SOCKS5.
+- 明文 shared-secret payload；
+- 自适应 RTO；
+- 拥塞控制；
+- 配置文件驱动的映射管理；
+- SOCKS5 `UDP ASSOCIATE` 支持。

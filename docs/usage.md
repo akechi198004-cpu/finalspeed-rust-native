@@ -1,17 +1,17 @@
-# Usage
+# 使用指南（Usage）
 
-This guide shows commands that match the current CLI and implementation.
+本文给出与当前 CLI 和实现一致的常用命令。
 
-## Build
+## 构建
 
-Linux:
+Linux：
 
 ```bash
 cargo build --release
 ./target/release/fspeed-rs --help
 ```
 
-Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 cargo build --release
@@ -20,7 +20,7 @@ cargo build --release
 
 ## Linux Server
 
-UDP mode, allowing only SSH on the server host:
+UDP 模式，仅允许访问 server 主机上的 SSH：
 
 ```bash
 ./target/release/fspeed-rs server \
@@ -30,7 +30,7 @@ UDP mode, allowing only SSH on the server host:
   --transport udp
 ```
 
-TCP fallback mode:
+TCP fallback 模式：
 
 ```bash
 ./target/release/fspeed-rs server \
@@ -40,12 +40,11 @@ TCP fallback mode:
   --transport tcp
 ```
 
-`--allow` is optional, but strongly recommended. Without it, authenticated
-clients can ask the server to connect to arbitrary TCP targets.
+`--allow` 是可选参数，但强烈建议开启。若不设置，认证通过的 client 可能要求 server 连接任意 TCP 目标。
 
 ## Windows Client
 
-UDP mode with SSH mapping:
+UDP 模式（SSH 映射）：
 
 ```powershell
 .\target\release\fspeed-rs.exe client `
@@ -55,7 +54,7 @@ UDP mode with SSH mapping:
   --transport udp
 ```
 
-TCP fallback with the same mapping:
+同样映射下的 TCP fallback：
 
 ```powershell
 .\target\release\fspeed-rs.exe client `
@@ -65,7 +64,7 @@ TCP fallback with the same mapping:
   --transport tcp
 ```
 
-Test SSH from the client machine:
+在 client 机器测试 SSH：
 
 ```powershell
 ssh -p 2222 user@127.0.0.1
@@ -73,31 +72,29 @@ ssh -p 2222 user@127.0.0.1
 
 ## UDP Transport
 
-UDP is the default. These two commands are equivalent:
+UDP 是默认值，以下两条命令等价：
 
 ```bash
 ./target/release/fspeed-rs client --server SERVER_IP:15000 --secret test123_secure --map 127.0.0.1:2222=127.0.0.1:22
 ./target/release/fspeed-rs client --server SERVER_IP:15000 --secret test123_secure --map 127.0.0.1:2222=127.0.0.1:22 --transport udp
 ```
 
-Each UDP datagram carries one encoded packet.
+每个 UDP datagram 承载一个 encoded packet。
 
 ## TCP Transport Fallback
 
-Use TCP fallback when UDP cannot reach the server. The server and client must
-both use `--transport tcp`.
+当 UDP 无法到达 server 时使用 TCP fallback。server 与 client 必须同时设置 `--transport tcp`。
 
 ```bash
 ./target/release/fspeed-rs server --listen 0.0.0.0:15000 --secret test123_secure --transport tcp
 ./target/release/fspeed-rs client --server SERVER_IP:15000 --secret test123_secure --socks5 127.0.0.1:1080 --transport tcp
 ```
 
-TCP fallback frames each encoded packet as `u32` big-endian length followed by
-the packet bytes.
+TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。
 
-## SOCKS5 Curl Test
+## SOCKS5 Curl 测试
 
-Start the server:
+启动 server：
 
 ```bash
 ./target/release/fspeed-rs server \
@@ -105,7 +102,7 @@ Start the server:
   --secret test123_secure
 ```
 
-Start the client-side SOCKS5 listener:
+启动 client 侧 SOCKS5 监听：
 
 ```bash
 ./target/release/fspeed-rs client \
@@ -114,18 +111,17 @@ Start the client-side SOCKS5 listener:
   --socks5 127.0.0.1:1080
 ```
 
-Test through the tunnel:
+通过隧道测试：
 
 ```bash
 curl --socks5-hostname 127.0.0.1:1080 http://example.com
 ```
 
-Use `--socks5-hostname` when you want the SOCKS5 request to carry the domain
-name instead of resolving it locally.
+当你希望 SOCKS5 请求携带 domain 名（而非本地解析）时，请使用 `--socks5-hostname`。
 
-## Browser SOCKS5 Setup
+## 浏览器 SOCKS5 配置
 
-Configure the browser or system proxy to use:
+将浏览器或系统代理配置为：
 
 ```text
 SOCKS host: 127.0.0.1
@@ -134,13 +130,11 @@ SOCKS version: SOCKS5
 Authentication: none
 ```
 
-For browser traffic, prefer remote DNS through SOCKS5 when the browser exposes
-that option. Browsers open many short connections, so more session lifecycle log
-entries are expected.
+浏览器流量建议开启“通过 SOCKS5 远程 DNS 解析”（如果浏览器提供该选项）。浏览器通常产生大量短连接，因此会看到更多 session 生命周期日志。
 
-## SSH Map Example
+## SSH 映射示例
 
-Server:
+Server：
 
 ```bash
 ./target/release/fspeed-rs server \
@@ -149,7 +143,7 @@ Server:
   --allow 127.0.0.1:22
 ```
 
-Client:
+Client：
 
 ```bash
 ./target/release/fspeed-rs client \
@@ -158,7 +152,7 @@ Client:
   --map 127.0.0.1:2222=127.0.0.1:22
 ```
 
-SSH:
+SSH：
 
 ```bash
 ssh -p 2222 user@127.0.0.1
@@ -166,59 +160,42 @@ ssh -p 2222 user@127.0.0.1
 
 ## GitHub Actions Artifacts
 
-The GitHub Actions build workflow runs on Linux and Windows. Successful runs
-upload `fspeed-rs-linux-x64` and `fspeed-rs-windows-x64` artifacts from the run
-page.
+GitHub Actions 构建 workflow 在 Linux 与 Windows 上运行。成功运行后，会在 run 页面上传 `fspeed-rs-linux-x64` 与 `fspeed-rs-windows-x64` artifacts。
 
 ## FAQ
 
-### UDP cannot reach the server
+### UDP 无法连接到 server
 
-Check cloud security groups, VPS firewall rules, local firewall rules, NAT, and
-whether the server is listening on the expected UDP port. If UDP is blocked by
-the network path, use TCP fallback on both sides.
+请检查云安全组、VPS 防火墙、本机防火墙、NAT 路径，以及 server 是否监听了预期 UDP 端口。若网络路径屏蔽 UDP，请在两端改用 TCP fallback。
 
-### How do I use TCP fallback?
+### 如何使用 TCP fallback？
 
-Add `--transport tcp` to both server and client. Do not mix UDP on one side and
-TCP on the other.
+在 server 与 client 两端都加上 `--transport tcp`。不要一端 UDP、一端 TCP 混用。
 
-### Secret mismatch
+### Secret 不一致
 
-Both sides derive the AEAD key from `--secret`. If the values differ,
-decryption fails and handshakes do not complete. Use exactly the same string on
-both sides.
+双方都会从 `--secret` 派生 AEAD key。若值不一致，解密会失败，握手也无法完成。请确保两端字符串完全一致。
 
 ### Target not allowed
 
-The server rejected the requested target because it is not in `--allow`. Add the
-exact `SocketAddr`, such as `127.0.0.1:22`, to the server allowlist. Domain
-names are rejected when `--allow` is configured.
+server 拒绝了请求目标，因为该地址不在 `--allow` 中。请将精确 `SocketAddr`（如 `127.0.0.1:22`）加入 allowlist。开启 `--allow` 时，domain 名会被拒绝。
 
-### Windows firewall
+### Windows 防火墙
 
-Allow `fspeed-rs.exe` through Windows Defender Firewall, or create an inbound
-rule for the chosen server port when running the server on Windows.
+在 Windows 上允许 `fspeed-rs.exe` 通过 Defender Firewall，或为 server 监听端口新增 inbound rule。
 
-### Linux firewall or cloud security group
+### Linux 防火墙或云安全组
 
-Open the selected UDP or TCP port in both the cloud provider security group and
-the host firewall. For UDP mode, opening only TCP is not enough.
+请同时在云安全组与主机防火墙放行所选 UDP/TCP 端口。UDP 模式下仅放行 TCP 不足以通信。
 
-### Browser SOCKS5 creates many logs
+### 浏览器 SOCKS5 日志很多
 
-Browsers open many short connections. It is normal to see many connection IDs,
-Close packets, and occasional debug logs for late packets belonging to recently
-closed sessions.
+浏览器会打开大量短连接。出现大量 connection ID、Close packet，以及偶发“已关闭会话迟到 packet”的 debug 日志是正常现象。
 
-### What does unknown ConnectionId mean?
+### unknown ConnectionId 是什么？
 
-A packet arrived for a connection ID that is not currently active. The runtime
-keeps tombstones for recently closed sessions and rate-limits repeated unknown
-warnings, so late retransmits or delayed packets do not flood logs.
+表示收到一个不属于当前活跃会话的 packet。运行时会为最近关闭会话保留 tombstone，并对重复未知连接告警限速，以避免迟到重传刷屏。
 
-### Is this production-grade?
+### 是否可用于生产？
 
-No. It is an experimental tunnel. It has encryption and a basic reliability
-runtime, but no SACK, congestion control, adaptive RTO, replay cache, or
-per-session key separation.
+暂不建议。当前是实验性隧道，虽有加密和基础可靠性机制，但没有 SACK、拥塞控制、自适应 RTO、replay cache 或 per-session key 隔离等生产级能力。
