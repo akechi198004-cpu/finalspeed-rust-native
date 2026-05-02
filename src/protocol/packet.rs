@@ -1,8 +1,8 @@
 //! Packet 数据结构定义模块。
 //! 定义 Packet Header 以及支持的 Packet 类型，对应 `docs/protocol.md`。
 
-use crate::error::{FSpeedError, Result};
-use crate::session::ConnectionId;
+use crate::app::error::{FSpeedError, Result};
+use crate::tunnel::session::ConnectionId;
 use bytes::Bytes;
 
 /// 固定的 Magic 字节，对应 ASCII "FS"。

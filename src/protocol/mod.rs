@@ -1,9 +1,14 @@
 //! 协议封包/解包模块。
 //! 按照 Big-Endian 格式进行 Header 和 Payload 的编码及解码。
 
-use crate::error::{FSpeedError, Result};
-use crate::packet::{HEADER_LEN, Header, MAGIC_BYTES, Packet, PacketType, VERSION};
-use crate::session::ConnectionId;
+pub mod crypto;
+pub mod framing;
+pub mod packet;
+pub mod payload;
+
+use crate::app::error::{FSpeedError, Result};
+use crate::protocol::packet::{HEADER_LEN, Header, MAGIC_BYTES, Packet, PacketType, VERSION};
+use crate::tunnel::session::ConnectionId;
 use bytes::{Buf, BufMut, BytesMut};
 
 /// 编码一个数据包，将 Header 字段按 Big-Endian 序列化并附加 Payload。
@@ -96,9 +101,9 @@ pub fn decode_packet(buf: &mut BytesMut) -> Result<Option<Packet>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::FSpeedError;
-    use crate::packet::{HEADER_LEN, MAGIC_BYTES, Packet, PacketType, VERSION};
-    use crate::session::ConnectionId;
+    use crate::app::error::FSpeedError;
+    use crate::protocol::packet::{HEADER_LEN, MAGIC_BYTES, Packet, PacketType, VERSION};
+    use crate::tunnel::session::ConnectionId;
     use bytes::Bytes;
 
     #[test]

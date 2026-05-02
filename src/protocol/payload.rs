@@ -3,7 +3,7 @@
 
 use std::str;
 
-use crate::error::{FSpeedError, Result};
+use crate::app::error::{FSpeedError, Result};
 
 /// 解析后的 OpenConnection 结构。
 /// 包含握手目标的地址以及防重放用的时间戳。

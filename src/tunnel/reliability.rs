@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use crate::packet::Packet;
+use crate::protocol::packet::Packet;
 use bytes::Bytes;
 
-use crate::constants::{INITIAL_RTO, MAX_RETRANSMISSIONS};
+use crate::app::constants::{INITIAL_RTO, MAX_RETRANSMISSIONS};
 
 /// UDP 数据连接的状态机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,13 +94,13 @@ impl SendState {
     pub fn get_timed_out_packets(
         &mut self,
         now: Instant,
-    ) -> Result<Vec<Packet>, crate::error::FSpeedError> {
+    ) -> Result<Vec<Packet>, crate::app::error::FSpeedError> {
         let mut to_retransmit = Vec::new();
         for (_, sent_packet) in self.unacked.iter_mut() {
             if now.duration_since(sent_packet.sent_at) >= INITIAL_RTO {
                 sent_packet.retransmit_count += 1;
                 if sent_packet.retransmit_count > MAX_RETRANSMISSIONS {
-                    return Err(crate::error::FSpeedError::Decode(
+                    return Err(crate::app::error::FSpeedError::Decode(
                         "Max retransmissions exceeded".to_string(),
                     ));
                 }
@@ -171,9 +171,9 @@ impl ReceiveState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::DEFAULT_SEND_WINDOW;
-    use crate::packet::{Packet, PacketType};
-    use crate::session::ConnectionId;
+    use crate::app::constants::DEFAULT_SEND_WINDOW;
+    use crate::protocol::packet::{Packet, PacketType};
+    use crate::tunnel::session::ConnectionId;
     use bytes::Bytes;
 
     fn create_test_packet(seq: u32) -> Packet {

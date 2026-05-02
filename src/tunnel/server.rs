@@ -8,20 +8,22 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{RwLock, mpsc};
 
-use crate::cli::TransportMode;
-use crate::constants::{DEFAULT_SEND_WINDOW, KEEPALIVE_INTERVAL, TCP_READ_BUFFER_SIZE};
-use crate::crypto::{
+use crate::app::cli::TransportMode;
+use crate::app::constants::{DEFAULT_SEND_WINDOW, KEEPALIVE_INTERVAL, TCP_READ_BUFFER_SIZE};
+use crate::protocol::crypto::{
     build_aad, decrypt_payload, derive_key, encrypt_payload, validate_timestamp_ms,
 };
-use crate::framing::{read_frame, write_frame};
-use crate::keepalive::{
+use crate::protocol::framing::{read_frame, write_frame};
+use crate::protocol::packet::{FLAG_ENCRYPTED, Packet, PacketType};
+use crate::protocol::payload::{
+    build_ack_payload, build_error_payload, parse_open_connection_payload,
+};
+use crate::protocol::{decode_packet, encode_packet};
+use crate::transport::{ConnectionRoute, ConnectionTable};
+use crate::tunnel::keepalive::{
     build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
 };
-use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
-use crate::payload::{build_ack_payload, build_error_payload, parse_open_connection_payload};
-use crate::protocol::{decode_packet, encode_packet};
-use crate::session::{ServerSessionManager, SessionHandle, SessionState};
-use crate::transport::{ConnectionRoute, ConnectionTable};
+use crate::tunnel::session::{ServerSessionManager, SessionHandle, SessionState};
 
 #[allow(clippy::collapsible_if)]
 pub async fn validate_open_connection_packet(
@@ -79,7 +81,7 @@ pub async fn run(
 }
 
 fn spawn_udp_keepalive_task(
-    conn_id: crate::session::ConnectionId,
+    conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ServerSessionManager,
     socket: Arc<UdpSocket>,
     peer_addr: SocketAddr,
@@ -123,7 +125,7 @@ fn spawn_udp_keepalive_task(
 }
 
 fn spawn_tcp_keepalive_task(
-    conn_id: crate::session::ConnectionId,
+    conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ServerSessionManager,
     tx_out: mpsc::Sender<Bytes>,
     secret: String,
@@ -197,11 +199,11 @@ pub async fn run_udp(
     let session_mgr_sweep = session_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            tokio::time::sleep(crate::app::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
             session_mgr_sweep
                 .sweep_idle_sessions(
                     std::time::Instant::now(),
-                    crate::constants::SESSION_IDLE_TIMEOUT,
+                    crate::app::constants::SESSION_IDLE_TIMEOUT,
                 )
                 .await;
         }
@@ -277,7 +279,9 @@ pub async fn run_udp(
                                                 tcp_stream.into_split();
                                             let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
 
-                                            use crate::reliability::{ReceiveState, SendState};
+                                            use crate::tunnel::reliability::{
+                                                ReceiveState, SendState,
+                                            };
                                             use tokio::sync::{Mutex, Notify};
 
                                             // Register session
@@ -321,7 +325,7 @@ pub async fn run_udp(
                                                 tokio::spawn(async move {
                                                     loop {
                                                         tokio::select! {
-                                                            _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
+                                                            _ = tokio::time::sleep(crate::app::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                 let now = std::time::Instant::now();
                                                                 let mut to_retransmit = Vec::new();
                                                                 let mut failed = false;
@@ -689,7 +693,7 @@ pub async fn run_udp(
                                 }
                                 session.window_notify.notify_waiters();
                             } else {
-                                use crate::session::UnknownState;
+                                use crate::tunnel::session::UnknownState;
                                 match session_mgr_clone.check_unknown(&conn_id).await {
                                     UnknownState::RecentlyClosed => {
                                         tracing::debug!(
@@ -764,7 +768,8 @@ pub async fn run_udp(
                                             Bytes::new(),
                                         ) {
                                             let ack_aad = build_aad(&ack_packet.header);
-                                            let ack_payload = crate::payload::build_ack_payload();
+                                            let ack_payload =
+                                                crate::protocol::payload::build_ack_payload();
                                             if let Ok(encrypted_ack) = encrypt_payload(
                                                 ack_payload.as_bytes(),
                                                 &read_key,
@@ -781,7 +786,7 @@ pub async fn run_udp(
                                             }
                                         }
                                     } else {
-                                        use crate::session::UnknownState;
+                                        use crate::tunnel::session::UnknownState;
                                         match session_mgr_clone.check_unknown(&conn_id).await {
                                             UnknownState::RecentlyClosed => {
                                                 tracing::debug!(
@@ -845,7 +850,7 @@ pub async fn run_udp(
                                     table.remove(&conn_id);
                                 }
                             } else {
-                                use crate::session::UnknownState;
+                                use crate::tunnel::session::UnknownState;
                                 match session_mgr_clone.check_unknown(&conn_id).await {
                                     UnknownState::RecentlyClosed => {
                                         tracing::debug!(
@@ -896,7 +901,7 @@ pub async fn run_udp(
                                     conn_id
                                 );
                             } else {
-                                use crate::session::UnknownState;
+                                use crate::tunnel::session::UnknownState;
                                 match session_mgr_clone.check_unknown(&conn_id).await {
                                     UnknownState::RecentlyClosed => {
                                         tracing::debug!(
@@ -963,11 +968,11 @@ pub async fn run_tcp(
     let session_mgr_sweep = session_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            tokio::time::sleep(crate::app::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
             session_mgr_sweep
                 .sweep_idle_sessions(
                     std::time::Instant::now(),
-                    crate::constants::SESSION_IDLE_TIMEOUT,
+                    crate::app::constants::SESSION_IDLE_TIMEOUT,
                 )
                 .await;
         }
@@ -1087,7 +1092,7 @@ pub async fn run_tcp(
                                                                             1024,
                                                                         );
 
-                                                                    use crate::reliability::{
+                                                                    use crate::tunnel::reliability::{
                                                                         ReceiveState, SendState,
                                                                     };
                                                                     use tokio::sync::{
@@ -1503,7 +1508,7 @@ pub async fn run_tcp(
                                                         }
                                                         session.window_notify.notify_waiters();
                                                     } else {
-                                                        use crate::session::UnknownState;
+                                                        use crate::tunnel::session::UnknownState;
                                                         match session_mgr_c
                                                             .check_unknown(&conn_id)
                                                             .await
@@ -1600,7 +1605,7 @@ pub async fn run_tcp(
                                                                     let ack_aad = build_aad(
                                                                         &ack_packet.header,
                                                                     );
-                                                                    let ack_payload = crate::payload::build_ack_payload();
+                                                                    let ack_payload = crate::protocol::payload::build_ack_payload();
                                                                     if let Ok(encrypted_ack) =
                                                                         encrypt_payload(
                                                                             ack_payload.as_bytes(),
@@ -1629,7 +1634,7 @@ pub async fn run_tcp(
                                                                     }
                                                                 }
                                                             } else {
-                                                                use crate::session::UnknownState;
+                                                                use crate::tunnel::session::UnknownState;
                                                                 match session_mgr_c.check_unknown(&conn_id).await {
                                                                     UnknownState::RecentlyClosed => {
                                                                         tracing::debug!("Dropping late Data packet for recently closed ConnectionId: {}", conn_id);
@@ -1685,7 +1690,7 @@ pub async fn run_tcp(
                                                             table.remove(&conn_id);
                                                         }
                                                     } else {
-                                                        use crate::session::UnknownState;
+                                                        use crate::tunnel::session::UnknownState;
                                                         match session_mgr_c
                                                             .check_unknown(&conn_id)
                                                             .await
@@ -1741,7 +1746,7 @@ pub async fn run_tcp(
                                                             conn_id
                                                         );
                                                     } else {
-                                                        use crate::session::UnknownState;
+                                                        use crate::tunnel::session::UnknownState;
                                                         match session_mgr_c
                                                             .check_unknown(&conn_id)
                                                             .await
@@ -1802,10 +1807,10 @@ pub async fn run_tcp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::ConnectionId;
+    use crate::tunnel::session::ConnectionId;
     use bytes::Bytes;
 
-    use crate::crypto::{build_aad, current_timestamp_ms, derive_key, encrypt_payload};
+    use crate::protocol::crypto::{build_aad, current_timestamp_ms, derive_key, encrypt_payload};
 
     fn create_encrypted_open_packet(target_addr: &str, secret: &str, valid_ts: bool) -> Packet {
         let ts = if valid_ts {

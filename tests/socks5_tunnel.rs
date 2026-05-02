@@ -42,11 +42,11 @@ async fn test_socks5_tunnel_loopback() {
         let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
         let allowlist = vec![echo_addr.parse().unwrap()];
         let server_task = tokio::spawn(async move {
-            fspeed_rs::server::run(
+            fspeed_rs::tunnel::server::run(
                 server_addr,
                 "test123".to_string(),
                 Some(allowlist),
-                fspeed_rs::cli::TransportMode::Udp,
+                fspeed_rs::app::cli::TransportMode::Udp,
             )
             .await
             .unwrap();
@@ -59,12 +59,12 @@ async fn test_socks5_tunnel_loopback() {
         let socks5_addr: SocketAddr = format!("127.0.0.1:{}", socks5_port).parse().unwrap();
 
         let client_task = tokio::spawn(async move {
-            fspeed_rs::client::run(
+            fspeed_rs::tunnel::client::run(
                 server_addr.to_string(),
                 "test123".to_string(),
                 vec![],
                 Some(socks5_addr),
-                fspeed_rs::cli::TransportMode::Udp,
+                fspeed_rs::app::cli::TransportMode::Udp,
             )
             .await
             .unwrap();

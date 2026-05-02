@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::session::ConnectionId;
+use crate::tunnel::session::ConnectionId;
 
 /// 线程安全的 Connection ID 生成器。
 /// 在客户端用于为每一条建立的 TCP 连接分配唯一的逻辑会话 ID。

@@ -1,24 +1,9 @@
 //! FSpeed-RS 命令行入口。
 //! 解析命令行参数并启动 Server 或 Client 模式。
-pub mod cli;
-pub mod client;
-pub mod config;
-pub mod constants;
-pub mod crypto;
-pub mod error;
-pub mod framing;
-pub mod keepalive;
-pub mod packet;
-pub mod payload;
-pub mod protocol;
-pub mod reliability;
-pub mod server;
-pub mod session;
-pub mod socks5;
-pub mod transport;
 
 use clap::Parser;
-use cli::{Cli, Commands};
+use fspeed_rs::app::cli::{Cli, Commands};
+use fspeed_rs::tunnel::{client, server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

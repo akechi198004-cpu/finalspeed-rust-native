@@ -41,7 +41,7 @@ pub enum SessionState {
     Established,
 }
 
-use crate::reliability::{ReceiveState, SendState};
+use crate::tunnel::reliability::{ReceiveState, SendState};
 use tokio::sync::{Mutex, Notify};
 
 /// SessionHandle 包装了处理逻辑连接相关的通道和状态。
@@ -204,7 +204,7 @@ impl ClientSessionManager {
 
         {
             let mut closed_map = self.closed_connections.write().await;
-            closed_map.retain(|_, v| now.duration_since(*v) < crate::constants::TOMBSTONE_TTL);
+            closed_map.retain(|_, v| now.duration_since(*v) < crate::app::constants::TOMBSTONE_TTL);
             if closed_map.contains_key(id) {
                 return UnknownState::RecentlyClosed;
             }
@@ -212,7 +212,7 @@ impl ClientSessionManager {
 
         let mut unknown_map = self.unknown_seen.write().await;
         unknown_map
-            .retain(|_, v| now.duration_since(*v) < crate::constants::UNKNOWN_WARN_RATE_LIMIT);
+            .retain(|_, v| now.duration_since(*v) < crate::app::constants::UNKNOWN_WARN_RATE_LIMIT);
 
         if unknown_map.contains_key(id) {
             UnknownState::RateLimited
@@ -295,7 +295,7 @@ impl ServerSessionManager {
 
         {
             let mut closed_map = self.closed_connections.write().await;
-            closed_map.retain(|_, v| now.duration_since(*v) < crate::constants::TOMBSTONE_TTL);
+            closed_map.retain(|_, v| now.duration_since(*v) < crate::app::constants::TOMBSTONE_TTL);
             if closed_map.contains_key(id) {
                 return UnknownState::RecentlyClosed;
             }
@@ -303,7 +303,7 @@ impl ServerSessionManager {
 
         let mut unknown_map = self.unknown_seen.write().await;
         unknown_map
-            .retain(|_, v| now.duration_since(*v) < crate::constants::UNKNOWN_WARN_RATE_LIMIT);
+            .retain(|_, v| now.duration_since(*v) < crate::app::constants::UNKNOWN_WARN_RATE_LIMIT);
 
         if unknown_map.contains_key(id) {
             UnknownState::RateLimited
@@ -332,8 +332,8 @@ pub struct ServerSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{DEFAULT_SEND_WINDOW, SESSION_IDLE_TIMEOUT};
-    use crate::keepalive::record_received_keepalive;
+    use crate::app::constants::{DEFAULT_SEND_WINDOW, SESSION_IDLE_TIMEOUT};
+    use crate::tunnel::keepalive::record_received_keepalive;
 
     #[test]
     fn test_connection_id_display() {

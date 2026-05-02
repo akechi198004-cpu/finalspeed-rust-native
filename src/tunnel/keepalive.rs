@@ -3,10 +3,10 @@
 
 use bytes::Bytes;
 
-use crate::crypto::{build_aad, current_timestamp_ms, encrypt_payload};
-use crate::error::Result;
-use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
-use crate::session::{ConnectionId, SessionHandle, SessionState};
+use crate::app::error::Result;
+use crate::protocol::crypto::{build_aad, current_timestamp_ms, encrypt_payload};
+use crate::protocol::packet::{FLAG_ENCRYPTED, Packet, PacketType};
+use crate::tunnel::session::{ConnectionId, SessionHandle, SessionState};
 
 /// 构造 KeepAlive 的明文 payload，包含类型和当前时间戳。
 pub fn build_keepalive_payload() -> String {
@@ -47,9 +47,9 @@ pub fn record_received_keepalive(session: &SessionHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{build_aad, decrypt_payload, derive_key};
+    use crate::protocol::crypto::{build_aad, decrypt_payload, derive_key};
     use crate::protocol::{decode_packet, encode_packet};
-    use crate::reliability::{ReceiveState, SendState};
+    use crate::tunnel::reliability::{ReceiveState, SendState};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::{Mutex, Notify, mpsc};
@@ -61,10 +61,10 @@ mod tests {
             tx,
             state,
             Arc::new(Mutex::new(SendState::new(
-                crate::constants::DEFAULT_SEND_WINDOW,
+                crate::app::constants::DEFAULT_SEND_WINDOW,
             ))),
             Arc::new(Mutex::new(ReceiveState::new(
-                crate::constants::DEFAULT_SEND_WINDOW,
+                crate::app::constants::DEFAULT_SEND_WINDOW,
             ))),
             Arc::new(Notify::new()),
             Arc::new(Notify::new()),

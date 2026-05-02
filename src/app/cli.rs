@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use crate::config::PortMap;
+use crate::app::config::PortMap;
 
 #[derive(Parser, Debug)]
 #[command(

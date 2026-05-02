@@ -1,15 +1,15 @@
 //! Client 核心逻辑。
 //! 包含端口映射、SOCKS5 代理及与服务端通信等。
 
-use crate::config::PortMap;
-use crate::crypto::{
+use crate::app::config::PortMap;
+use crate::protocol::crypto::{
     build_aad, current_timestamp_ms, decrypt_payload, derive_key, encrypt_payload,
 };
-use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
-use crate::payload::parse_error_payload;
+use crate::protocol::packet::{FLAG_ENCRYPTED, Packet, PacketType};
+use crate::protocol::payload::parse_error_payload;
 use crate::protocol::{decode_packet, encode_packet};
-use crate::session::{ClientSessionManager, SessionHandle, SessionState};
 use crate::transport::ConnectionIdGenerator;
+use crate::tunnel::session::{ClientSessionManager, SessionHandle, SessionState};
 
 use bytes::{Bytes, BytesMut};
 use std::net::SocketAddr;
@@ -18,10 +18,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket, lookup_host};
 use tokio::sync::mpsc;
 
-use crate::cli::TransportMode;
-use crate::constants::{DEFAULT_SEND_WINDOW, KEEPALIVE_INTERVAL, TCP_READ_BUFFER_SIZE};
-use crate::framing::{read_frame, write_frame};
-use crate::keepalive::{
+use crate::app::cli::TransportMode;
+use crate::app::constants::{DEFAULT_SEND_WINDOW, KEEPALIVE_INTERVAL, TCP_READ_BUFFER_SIZE};
+use crate::protocol::framing::{read_frame, write_frame};
+use crate::tunnel::keepalive::{
     build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
 };
 
@@ -40,7 +40,7 @@ pub async fn run(
 }
 
 fn spawn_udp_keepalive_task(
-    conn_id: crate::session::ConnectionId,
+    conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ClientSessionManager,
     socket: Arc<UdpSocket>,
     peer_addr: SocketAddr,
@@ -84,7 +84,7 @@ fn spawn_udp_keepalive_task(
 }
 
 fn spawn_tcp_keepalive_task(
-    conn_id: crate::session::ConnectionId,
+    conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ClientSessionManager,
     tx_out: mpsc::Sender<Bytes>,
     secret: Arc<String>,
@@ -161,11 +161,11 @@ pub async fn run_udp(
     let session_mgr_sweep = session_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            tokio::time::sleep(crate::app::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
             session_mgr_sweep
                 .sweep_idle_sessions(
                     std::time::Instant::now(),
-                    crate::constants::SESSION_IDLE_TIMEOUT,
+                    crate::app::constants::SESSION_IDLE_TIMEOUT,
                 )
                 .await;
         }
@@ -246,7 +246,7 @@ pub async fn run_udp(
                                                     ) {
                                                         let ack_aad = build_aad(&ack_packet.header);
                                                         let ack_payload =
-                                                            crate::payload::build_ack_payload(); // or empty
+                                                            crate::protocol::payload::build_ack_payload(); // or empty
                                                         if let Ok(encrypted_ack) = encrypt_payload(
                                                             ack_payload.as_bytes(),
                                                             &read_key,
@@ -269,7 +269,7 @@ pub async fn run_udp(
                                                         }
                                                     }
                                                 } else {
-                                                    use crate::session::UnknownState;
+                                                    use crate::tunnel::session::UnknownState;
                                                     match session_mgr.check_unknown(&conn_id).await
                                                     {
                                                         UnknownState::RecentlyClosed => {
@@ -340,7 +340,7 @@ pub async fn run_udp(
                                                     .await;
                                             }
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -430,7 +430,7 @@ pub async fn run_udp(
                                             );
                                             session_mgr.remove(&conn_id).await;
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -481,7 +481,7 @@ pub async fn run_udp(
                                                 conn_id
                                             );
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -587,7 +587,7 @@ pub async fn run_udp(
                                         // Register session as Pending BEFORE sending the packet
                                         // This prevents a race condition where the server replies with Ack
                                         // before the client has registered the pending handshake.
-                                        use crate::reliability::{ReceiveState, SendState};
+                                        use crate::tunnel::reliability::{ReceiveState, SendState};
                                         use tokio::sync::{Mutex, Notify};
 
                                         session_mgr_clone
@@ -629,7 +629,7 @@ pub async fn run_udp(
 
                                                     // Wait for handshake with a 5-second timeout
                                                     let handshake_result = tokio::time::timeout(
-                                                        crate::constants::HANDSHAKE_TIMEOUT,
+                                                        crate::app::constants::HANDSHAKE_TIMEOUT,
                                                         hs_rx,
                                                     )
                                                     .await;
@@ -669,7 +669,7 @@ pub async fn run_udp(
                                                                 tokio::spawn(async move {
                                                                     loop {
                                                                         tokio::select! {
-                                                                            _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
+                                                                            _ = tokio::time::sleep(crate::app::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                 let now = std::time::Instant::now();
                                                                                 let mut to_retransmit = Vec::new();
                                                                                 let mut failed = false;
@@ -990,7 +990,7 @@ pub async fn run_udp(
                         let session_mgr_inner = session_mgr_clone.clone();
 
                         tokio::spawn(async move {
-                            use crate::socks5::{
+                            use crate::proxy::socks5::{
                                 handle_socks5_greeting, handle_socks5_request, send_socks5_failure,
                                 send_socks5_success,
                             };
@@ -1042,7 +1042,9 @@ pub async fn run_udp(
                                             let (tx, mut rx) = mpsc::channel::<Bytes>(1024);
                                             let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
 
-                                            use crate::reliability::{ReceiveState, SendState};
+                                            use crate::tunnel::reliability::{
+                                                ReceiveState, SendState,
+                                            };
                                             use tokio::sync::{Mutex, Notify};
 
                                             session_mgr_inner
@@ -1076,7 +1078,7 @@ pub async fn run_udp(
                                                             e
                                                         );
                                                         session_mgr_inner.remove(&conn_id).await;
-                                                        let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                        let _ = send_socks5_failure(&mut write_half, crate::proxy::socks5::REP_COMMAND_NOT_SUPPORTED).await;
                                                     } else {
                                                         tracing::info!(
                                                             "Sent OpenConnection packet for SOCKS5 {} to server",
@@ -1085,7 +1087,7 @@ pub async fn run_udp(
 
                                                         let handshake_result =
                                                             tokio::time::timeout(
-                                                                crate::constants::HANDSHAKE_TIMEOUT,
+                                                                crate::app::constants::HANDSHAKE_TIMEOUT,
                                                                 hs_rx,
                                                             )
                                                             .await;
@@ -1128,7 +1130,7 @@ pub async fn run_udp(
                                                                     tokio::spawn(async move {
                                                                         loop {
                                                                             tokio::select! {
-                                                                                _ = tokio::time::sleep(crate::constants::RETRANSMIT_SCAN_INTERVAL) => {
+                                                                                _ = tokio::time::sleep(crate::app::constants::RETRANSMIT_SCAN_INTERVAL) => {
                                                                                     let now = std::time::Instant::now();
                                                                                     let mut to_retransmit = Vec::new();
                                                                                     let mut failed = false;
@@ -1185,7 +1187,7 @@ pub async fn run_udp(
                                                                 session_mgr_inner
                                                                     .remove(&conn_id)
                                                                     .await;
-                                                                let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                                let _ = send_socks5_failure(&mut write_half, crate::proxy::socks5::REP_COMMAND_NOT_SUPPORTED).await;
                                                                 return;
                                                             }
                                                         }
@@ -1464,11 +1466,11 @@ pub async fn run_tcp(
     let session_mgr_sweep = session_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(crate::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
+            tokio::time::sleep(crate::app::constants::SESSION_IDLE_SWEEP_INTERVAL).await;
             session_mgr_sweep
                 .sweep_idle_sessions(
                     std::time::Instant::now(),
-                    crate::constants::SESSION_IDLE_TIMEOUT,
+                    crate::app::constants::SESSION_IDLE_TIMEOUT,
                 )
                 .await;
         }
@@ -1562,7 +1564,7 @@ pub async fn run_tcp(
                                                     ) {
                                                         let ack_aad = build_aad(&ack_packet.header);
                                                         let ack_payload =
-                                                            crate::payload::build_ack_payload();
+                                                            crate::protocol::payload::build_ack_payload();
                                                         if let Ok(encrypted_ack) = encrypt_payload(
                                                             ack_payload.as_bytes(),
                                                             &read_key,
@@ -1582,7 +1584,7 @@ pub async fn run_tcp(
                                                         }
                                                     }
                                                 } else {
-                                                    use crate::session::UnknownState;
+                                                    use crate::tunnel::session::UnknownState;
                                                     match session_mgr.check_unknown(&conn_id).await
                                                     {
                                                         UnknownState::RecentlyClosed => {
@@ -1652,7 +1654,7 @@ pub async fn run_tcp(
                                                     .await;
                                             }
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -1741,7 +1743,7 @@ pub async fn run_tcp(
                                             );
                                             session_mgr.remove(&conn_id).await;
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -1792,7 +1794,7 @@ pub async fn run_tcp(
                                                 conn_id
                                             );
                                         } else {
-                                            use crate::session::UnknownState;
+                                            use crate::tunnel::session::UnknownState;
                                             match session_mgr.check_unknown(&conn_id).await {
                                                 UnknownState::RecentlyClosed => {
                                                     tracing::debug!(
@@ -1896,7 +1898,7 @@ pub async fn run_tcp(
                                         let (s_tx, mut s_rx) = mpsc::channel::<Bytes>(1024);
                                         let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
 
-                                        use crate::reliability::{ReceiveState, SendState};
+                                        use crate::tunnel::reliability::{ReceiveState, SendState};
                                         use tokio::sync::{Mutex, Notify};
 
                                         session_mgr_clone
@@ -1936,7 +1938,7 @@ pub async fn run_tcp(
                                                     );
 
                                                     let handshake_result = tokio::time::timeout(
-                                                        crate::constants::HANDSHAKE_TIMEOUT,
+                                                        crate::app::constants::HANDSHAKE_TIMEOUT,
                                                         hs_rx,
                                                     )
                                                     .await;
@@ -2220,7 +2222,7 @@ pub async fn run_tcp(
                         let session_mgr_inner = session_mgr_clone.clone();
 
                         tokio::spawn(async move {
-                            use crate::socks5::{
+                            use crate::proxy::socks5::{
                                 handle_socks5_greeting, handle_socks5_request, send_socks5_failure,
                                 send_socks5_success,
                             };
@@ -2272,7 +2274,9 @@ pub async fn run_tcp(
                                             let (s_tx, mut s_rx) = mpsc::channel::<Bytes>(1024);
                                             let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
 
-                                            use crate::reliability::{ReceiveState, SendState};
+                                            use crate::tunnel::reliability::{
+                                                ReceiveState, SendState,
+                                            };
                                             use tokio::sync::{Mutex, Notify};
 
                                             session_mgr_inner
@@ -2306,7 +2310,7 @@ pub async fn run_tcp(
                                                             e
                                                         );
                                                         session_mgr_inner.remove(&conn_id).await;
-                                                        let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                        let _ = send_socks5_failure(&mut write_half, crate::proxy::socks5::REP_COMMAND_NOT_SUPPORTED).await;
                                                     } else {
                                                         tracing::info!(
                                                             "Sent OpenConnection packet for SOCKS5 {} to server",
@@ -2315,7 +2319,7 @@ pub async fn run_tcp(
 
                                                         let handshake_result =
                                                             tokio::time::timeout(
-                                                                crate::constants::HANDSHAKE_TIMEOUT,
+                                                                crate::app::constants::HANDSHAKE_TIMEOUT,
                                                                 hs_rx,
                                                             )
                                                             .await;
@@ -2359,7 +2363,7 @@ pub async fn run_tcp(
                                                                 session_mgr_inner
                                                                     .remove(&conn_id)
                                                                     .await;
-                                                                let _ = send_socks5_failure(&mut write_half, crate::socks5::REP_COMMAND_NOT_SUPPORTED).await;
+                                                                let _ = send_socks5_failure(&mut write_half, crate::proxy::socks5::REP_COMMAND_NOT_SUPPORTED).await;
                                                                 return;
                                                             }
                                                         }

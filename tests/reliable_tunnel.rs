@@ -44,11 +44,11 @@ async fn test_reliable_tunnel() {
         let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
         let allowlist = vec![echo_addr.parse().unwrap()];
         let server_task = tokio::spawn(async move {
-            fspeed_rs::server::run(
+            fspeed_rs::tunnel::server::run(
                 server_addr,
                 "test123".to_string(),
                 Some(allowlist),
-                fspeed_rs::cli::TransportMode::Udp,
+                fspeed_rs::app::cli::TransportMode::Udp,
             )
             .await
             .unwrap();
@@ -57,18 +57,18 @@ async fn test_reliable_tunnel() {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let local_port = find_free_tcp_port().await;
-        let map = fspeed_rs::config::PortMap {
+        let map = fspeed_rs::app::config::PortMap {
             local: format!("127.0.0.1:{}", local_port).parse().unwrap(),
             target: echo_addr.clone(),
         };
 
         let client_task = tokio::spawn(async move {
-            fspeed_rs::client::run(
+            fspeed_rs::tunnel::client::run(
                 server_addr.to_string(),
                 "test123".to_string(),
                 vec![map],
                 None,
-                fspeed_rs::cli::TransportMode::Udp,
+                fspeed_rs::app::cli::TransportMode::Udp,
             )
             .await
             .unwrap();

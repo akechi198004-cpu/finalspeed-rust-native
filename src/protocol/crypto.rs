@@ -1,8 +1,8 @@
 //! 加密模块。
 //! 使用 HKDF-SHA256 派生密钥，并使用 ChaCha20-Poly1305 AEAD 加密/解密 payload。
 
-use crate::error::{FSpeedError, Result};
-use crate::packet::Header;
+use crate::app::error::{FSpeedError, Result};
+use crate::protocol::packet::Header;
 use bytes::{BufMut, Bytes, BytesMut};
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
@@ -124,13 +124,13 @@ pub fn validate_timestamp_ms(timestamp_ms: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packet::PacketType;
-    use crate::session::ConnectionId;
+    use crate::protocol::packet::PacketType;
+    use crate::tunnel::session::ConnectionId;
 
     fn dummy_header() -> Header {
         Header {
-            magic: crate::packet::MAGIC_BYTES,
-            version: crate::packet::VERSION,
+            magic: crate::protocol::packet::MAGIC_BYTES,
+            version: crate::protocol::packet::VERSION,
             packet_type: PacketType::Data,
             flags: 0x0001,
             connection_id: ConnectionId(1),

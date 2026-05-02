@@ -1,4 +1,4 @@
-use fspeed_rs::cli::TransportMode;
+use fspeed_rs::app::cli::TransportMode;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -38,7 +38,7 @@ async fn test_tcp_transport_tunnel_loopback() {
         let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
         let allowlist = vec![echo_addr.parse().unwrap()];
         let server_task = tokio::spawn(async move {
-            fspeed_rs::server::run(
+            fspeed_rs::tunnel::server::run(
                 server_addr,
                 "test123".to_string(),
                 Some(allowlist),
@@ -55,7 +55,7 @@ async fn test_tcp_transport_tunnel_loopback() {
         let socks_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
 
         let client_task = tokio::spawn(async move {
-            fspeed_rs::client::run(
+            fspeed_rs::tunnel::client::run(
                 server_addr.to_string(),
                 "test123".to_string(),
                 vec![],
