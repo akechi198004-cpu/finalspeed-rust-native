@@ -1,8 +1,13 @@
+//! 协议封包/解包模块。
+//! 按照 Big-Endian 格式进行 Header 和 Payload 的编码及解码。
+
 use crate::error::{FSpeedError, Result};
 use crate::packet::{HEADER_LEN, Header, MAGIC_BYTES, Packet, PacketType, VERSION};
 use crate::session::ConnectionId;
 use bytes::{Buf, BufMut, BytesMut};
 
+/// 编码一个数据包，将 Header 字段按 Big-Endian 序列化并附加 Payload。
+/// 返回组装完成的二进制缓冲区。
 pub fn encode_packet(packet: &Packet) -> Result<BytesMut> {
     if packet.header.payload_len as usize != packet.payload.len() {
         return Err(FSpeedError::PayloadLengthMismatch);
@@ -10,7 +15,7 @@ pub fn encode_packet(packet: &Packet) -> Result<BytesMut> {
 
     let mut buf = BytesMut::with_capacity(HEADER_LEN + packet.payload.len());
 
-    // Write header (Big-Endian)
+    // 写入 Header（均为 Big-Endian）
     buf.put_u16(packet.header.magic);
     buf.put_u8(packet.header.version);
     buf.put_u8(packet.header.packet_type.clone() as u8);
@@ -27,9 +32,11 @@ pub fn encode_packet(packet: &Packet) -> Result<BytesMut> {
     Ok(buf)
 }
 
+/// 解码一个数据包，成功则返回完整的 Packet，同时将处理完的数据从缓冲区移除。
+/// 如果数据不足或包含不匹配的数据会导致错误返回（当前在 UDP 中通常由于一包一定完整，截断直接报错）。
 pub fn decode_packet(buf: &mut BytesMut) -> Result<Option<Packet>> {
     if buf.len() < HEADER_LEN {
-        // UDP datagram is too short to even contain the header.
+        // UDP 数据报长度甚至不够一个 Header
         return Err(FSpeedError::TruncatedPacket);
     }
 

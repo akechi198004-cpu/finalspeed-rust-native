@@ -1,10 +1,14 @@
+//! 传输层通用状态定义。
+//! 主要包含 ConnectionIdGenerator 用于自增连接 ID。
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::session::ConnectionId;
 
-/// Thread-safe Connection ID generator
+/// 线程安全的 Connection ID 生成器。
+/// 在客户端用于为每一条建立的 TCP 连接分配唯一的逻辑会话 ID。
 pub struct ConnectionIdGenerator {
     next_id: AtomicU32,
 }
@@ -22,19 +26,21 @@ impl ConnectionIdGenerator {
         }
     }
 
+    /// 自增并获取下一个逻辑 Connection ID。
     pub fn next(&self) -> ConnectionId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         ConnectionId(id)
     }
 }
 
+/// 用于记录每个 Connection ID 映射的对端和目标地址。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionRoute {
     pub peer_addr: SocketAddr,
     pub target_addr: String,
 }
 
-/// Routing table for logical connections
+/// 连接的路由表，主要记录已建立逻辑隧道的路由信息。
 pub struct ConnectionTable {
     routes: HashMap<ConnectionId, ConnectionRoute>,
 }

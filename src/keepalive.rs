@@ -1,3 +1,6 @@
+//! KeepAlive 数据包构造与验证模块。
+//! 用于防止闲置连接被清理。
+
 use bytes::Bytes;
 
 use crate::crypto::{build_aad, current_timestamp_ms, encrypt_payload};
@@ -5,10 +8,13 @@ use crate::error::Result;
 use crate::packet::{FLAG_ENCRYPTED, Packet, PacketType};
 use crate::session::{ConnectionId, SessionHandle, SessionState};
 
+/// 构造 KeepAlive 的明文 payload，包含类型和当前时间戳。
 pub fn build_keepalive_payload() -> String {
     format!("type=keepalive\ntimestamp_ms={}", current_timestamp_ms())
 }
 
+/// 构造并加密一个 KeepAlive 数据包。
+/// KeepAlive 数据包使用 ChaCha20-Poly1305 进行加密，但 Header 保持明文（加入 AAD）。
 pub fn build_encrypted_keepalive_packet(conn_id: ConnectionId, key: &[u8; 32]) -> Result<Packet> {
     let mut packet = Packet::try_new(
         PacketType::KeepAlive,
@@ -27,10 +33,13 @@ pub fn build_encrypted_keepalive_packet(conn_id: ConnectionId, key: &[u8; 32]) -
     Ok(packet)
 }
 
+/// 判断一个 Session 是否应该发送 KeepAlive 包（当前仅 Established 状态发送）。
 pub fn should_send_keepalive(session: &SessionHandle) -> bool {
     session.state == SessionState::Established
 }
 
+/// 记录接收到的 KeepAlive 数据包。
+/// 仅更新 `last_activity`，防止 Idle Sweep 将连接清理掉。
 pub fn record_received_keepalive(session: &SessionHandle) {
     session.touch();
 }

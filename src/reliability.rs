@@ -1,3 +1,6 @@
+//! 可靠性 (Reliability) 处理模块。
+//! 提供 SendState 和 ReceiveState，处理序列号、累计 ACK 及发送重传逻辑。
+
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -6,6 +9,7 @@ use bytes::Bytes;
 
 use crate::constants::{INITIAL_RTO, MAX_RETRANSMISSIONS};
 
+/// UDP 数据连接的状态机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Opening,
@@ -15,6 +19,7 @@ pub enum ConnectionState {
     Failed,
 }
 
+/// 记录已发送但尚未被 ACK 确认的数据包。
 #[derive(Debug, Clone)]
 pub struct SentPacket {
     pub packet: Packet,
@@ -22,10 +27,15 @@ pub struct SentPacket {
     pub retransmit_count: u32,
 }
 
+/// 发送端的状态。
+/// 负责生成下一个序列号、维护滑动窗口内未确认的数据包，以及处理累计 ACK 并清理缓冲区。
 #[derive(Debug)]
 pub struct SendState {
+    /// 下一个分配的序列号，从 1 开始。
     pub next_sequence: u32,
+    /// 尚未确认的数据包队列。
     pub unacked: BTreeMap<u32, SentPacket>,
+    /// 固定的发送窗口大小限制。
     pub send_window: u16,
 }
 
@@ -103,9 +113,14 @@ impl SendState {
 }
 
 #[derive(Debug)]
+/// 接收端的状态。
+/// 负责跟踪下一个期望的序列号、缓存乱序的数据包以及生成累计的 ACK 值。
 pub struct ReceiveState {
+    /// 下一个期望收到的连续序列号。
     pub next_expected: u32,
+    /// 缓存接收窗口内由于乱序提前到达的数据载荷。
     pub out_of_order: BTreeMap<u32, Bytes>,
+    /// 固定的接收窗口大小限制。
     pub receive_window: u16,
 }
 

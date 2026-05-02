@@ -1,3 +1,6 @@
+//! Client 核心逻辑。
+//! 包含端口映射、SOCKS5 代理及与服务端通信等。
+
 use crate::config::PortMap;
 use crate::crypto::{
     build_aad, current_timestamp_ms, decrypt_payload, derive_key, encrypt_payload,
@@ -22,6 +25,7 @@ use crate::keepalive::{
     build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
 };
 
+/// 启动 Client 服务，并根据指定的 `TransportMode` 将任务派发给相应的执行器处理。
 pub async fn run(
     server: String,
     secret: String,
@@ -125,6 +129,13 @@ fn spawn_tcp_keepalive_task(
     });
 }
 
+/// 运行 UDP 模式的 Client。
+///
+/// 特性：
+/// - Client 端的 SessionLifecycle 管理。
+/// - 支持多个本地 PortMap 监听和一个 SOCKS5 监听。
+/// - 将接收到的 TCP 字节流打成 `[PacketType::Data]` 的 UDP 请求包发送到远端 Server。
+/// - 启用了 UDP 下的丢包重传策略。
 pub async fn run_udp(
     server: String,
     secret: String,
@@ -1419,6 +1430,14 @@ pub async fn run_udp(
 
     Ok(())
 }
+
+/// 运行 TCP 模式的 Client。
+///
+/// 特性：
+/// - 每个新的本地映射或 SOCKS5 请求都会向远程 Server 建立一条新的 TCP 长连接。
+/// - 基于 Length-Prefixed Frame 的协议处理。
+/// - 内部不再维护重传相关的任务（由于底层 TCP 会处理）。
+/// - 依然会发送 Encrypted KeepAlive 避免底层连接超时。
 #[allow(clippy::collapsible_if)]
 pub async fn run_tcp(
     server: String,
