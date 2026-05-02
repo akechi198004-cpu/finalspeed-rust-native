@@ -49,6 +49,8 @@ u32_be length || encoded_packet
 
 TCP frame length 指编码后 packet 长度，不包含前置 4-byte length。当前最大 frame size 为 `2 MiB`。
 
+TCP transport payload 仍使用 ChaCha20-Poly1305 AEAD 加密，但可靠性与有序性依赖 OS TCP。业务 `Data` packet 在 TCP transport 中按 frame 顺序直接解密并交付，不使用 RUDP send window、unacked retransmission buffer、ReceiveState 乱序重排，也不为业务 Data 发送 Ack。`Ack` packet 仍用于 `OpenConnection` handshake。
+
 fake-TCP transport（experimental / Linux-only）：
 
 ```text
@@ -108,7 +110,7 @@ server 使用 300 秒时间偏差窗口校验 `timestamp_ms`。若配置了 `--a
 
 `Data` payload 为加密后的 TCP 字节片段。Data packet 使用会话级 sequence number（来自 `SendState`），从 `1` 开始。
 
-接收端 `ReceiveState` 行为：
+UDP/fake-TCP packet data path 的接收端 `ReceiveState` 行为：
 
 - 丢弃低于 `next_expected` 的重复序号；
 - 在接收窗口内缓存乱序 packet；
@@ -123,7 +125,7 @@ server 使用 300 秒时间偏差窗口校验 `timestamp_ms`。若配置了 `--a
 status=ok
 ```
 
-真正有意义的 ACK 值在 header 的 `ack` 字段中。它是累计确认：`ack = N` 表示该会话中 `<= N` 的 packet 序号已连续收到。ACK packet 使用 `sequence = 0`。
+在 UDP/fake-TCP packet data path 中，真正有意义的 ACK 值在 header 的 `ack` 字段中。它是累计确认：`ack = N` 表示该会话中 `<= N` 的 packet 序号已连续收到。ACK packet 使用 `sequence = 0`。
 
 初次 `OpenConnection` 成功响应也是加密 `Ack`，其 `ack = 0`。
 
@@ -167,7 +169,7 @@ timestamp_ms=<unix_epoch_milliseconds>
 - 重传扫描间隔：`200 ms`；
 - RTO 固定：`1000 ms`；
 - 最大重传次数：`20`；
-- UDP 路径在会话建立后启动重传任务；TCP transport 不启动重传任务。
+- UDP 路径在会话建立后启动重传任务；TCP transport 不启动重传任务，不使用 RUDP send window 或 Data Ack 推进业务数据发送。
 
 ## Session 生命周期
 

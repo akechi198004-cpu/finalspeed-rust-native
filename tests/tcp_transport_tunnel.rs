@@ -21,7 +21,7 @@ async fn test_tcp_transport_tunnel_loopback() {
 
         let echo_task = tokio::spawn(async move {
             if let Ok((mut stream, _)) = echo_listener.accept().await {
-                let mut buf = vec![0; 1024];
+                let mut buf = vec![0; 64 * 1024];
                 while let Ok(n) = stream.read(&mut buf).await {
                     if n == 0 {
                         break; // EOF
@@ -109,4 +109,98 @@ async fn test_tcp_transport_tunnel_loopback() {
     })
     .await
     .expect("Test timed out");
+}
+
+#[tokio::test]
+async fn test_tcp_transport_large_socks5_echo_loopback() {
+    tracing_subscriber::fmt::try_init().ok();
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let echo_port = find_free_tcp_port().await;
+        let echo_addr = format!("127.0.0.1:{}", echo_port);
+        let echo_listener = TcpListener::bind(&echo_addr).await.unwrap();
+
+        let echo_task = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = echo_listener.accept().await {
+                let mut buf = vec![0; 64 * 1024];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    if stream.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let server_port = find_free_tcp_port().await;
+        let server_addr: SocketAddr = format!("127.0.0.1:{}", server_port).parse().unwrap();
+        let allowlist = vec![echo_addr.parse().unwrap()];
+        let server_task = tokio::spawn(async move {
+            fspeed_rs::tunnel::server::run(
+                server_addr,
+                "test123".to_string(),
+                Some(allowlist),
+                TransportMode::Tcp,
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let socks_port = find_free_tcp_port().await;
+        let socks_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
+        let client_task = tokio::spawn(async move {
+            fspeed_rs::tunnel::client::run(
+                server_addr.to_string(),
+                "test123".to_string(),
+                vec![],
+                Some(socks_addr),
+                TransportMode::Tcp,
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut client_stream = TcpStream::connect(socks_addr).await.unwrap();
+        client_stream.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+        let mut greeting = [0u8; 2];
+        client_stream.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [0x05, 0x00]);
+
+        client_stream
+            .write_all(&[0x05, 0x01, 0x00, 0x01])
+            .await
+            .unwrap();
+        client_stream.write_all(&[127, 0, 0, 1]).await.unwrap();
+        client_stream
+            .write_all(&echo_port.to_be_bytes())
+            .await
+            .unwrap();
+
+        let mut connect_response = [0u8; 10];
+        client_stream
+            .read_exact(&mut connect_response)
+            .await
+            .unwrap();
+        assert_eq!(connect_response[0], 0x05);
+        assert_eq!(connect_response[1], 0x00);
+
+        let payload: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
+        client_stream.write_all(&payload).await.unwrap();
+
+        let mut echoed = vec![0; payload.len()];
+        client_stream.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(echoed, payload);
+
+        echo_task.abort();
+        server_task.abort();
+        client_task.abort();
+    })
+    .await
+    .expect("large TCP transport echo test timed out");
 }

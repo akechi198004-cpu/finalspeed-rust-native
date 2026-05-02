@@ -38,6 +38,14 @@ Transport mode:
   tcp = TCP fallback using length-prefixed encrypted packets
   faketcp = Linux-only experimental fake TCP packet transport. Requires root or CAP_NET_RAW/CAP_NET_ADMIN. Firewall should allow the selected TCP port. Not real TCP, not supported on Windows.";
 
+pub fn should_use_rudp_data_path(transport: TransportMode) -> bool {
+    match transport {
+        TransportMode::Udp => true,
+        TransportMode::Tcp => false,
+        TransportMode::FakeTcp => true,
+    }
+}
+
 /// 支持的命令行子命令，分别为 Server 和 Client。
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -289,6 +297,13 @@ mod tests {
         ];
 
         assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn test_should_use_rudp_data_path() {
+        assert!(should_use_rudp_data_path(TransportMode::Udp));
+        assert!(!should_use_rudp_data_path(TransportMode::Tcp));
+        assert!(should_use_rudp_data_path(TransportMode::FakeTcp));
     }
 
     #[test]

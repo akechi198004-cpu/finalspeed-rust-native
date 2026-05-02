@@ -12,7 +12,7 @@
 - 已实现静态 `--map` TCP 转发。
 - 已实现客户端 SOCKS5 无认证 `CONNECT`。
 - `OpenConnection`、`Data`、`Ack`、`Error`、`Close`、`KeepAlive` 的 payload 均已加密。
-- `Data` packet 使用 sequence number、累计 ACK、固定窗口与重传机制。
+- UDP `Data` packet 使用 sequence number、累计 ACK、固定窗口与重传机制；TCP transport 依赖 OS TCP 的可靠性和有序性。
 - 已实现加密 keepalive：默认每 30 秒发送一次，用于减少 TCP fallback + SOCKS5 浏览器长连接闲置后失效。
 - 目前仍是实验阶段，尚未实现 SACK、拥塞控制、自适应 RTO、replay cache、per-session salt、生产级加固等能力。
 
@@ -95,6 +95,8 @@ u32 big-endian length || encoded_packet
 ```
 
 已建立会话会发送 encrypted keepalive，默认间隔 30 秒；keepalive timeout 为 120 秒，session idle timeout 仍为 300 秒。
+
+TCP transport 仍使用 ChaCha20-Poly1305 AEAD 加密 payload，但业务 `Data` fast path 不再使用 RUDP send window、unacked retransmission buffer、ReceiveState 乱序重排或 Data Ack 推进发送。`Ack` packet 仍用于 `OpenConnection` handshake。TCP fallback 的目标是减少自身协议开销、提升稳定性和吞吐；它解决可达性，不保证“加速”。
 
 ## fake-TCP 模式（Linux-only experimental）
 
@@ -228,7 +230,7 @@ for networks where UDP is blocked.
 - Static `--map` TCP forwarding is implemented.
 - Client-side SOCKS5 no-auth `CONNECT` is implemented.
 - Payloads for `OpenConnection`, `Data`, `Ack`, `Error`, and `Close` are encrypted.
-- Data packets use sequence numbers, cumulative ACKs, a fixed window, and retransmission.
+- UDP data packets use sequence numbers, cumulative ACKs, a fixed window, and retransmission; TCP transport relies on OS TCP reliability and ordering.
 - This is still experimental. It does not implement SACK, congestion control, adaptive RTO, replay cache, per-session salts, or production-grade hardening.
 
 For a more detailed implementation snapshot, see [docs/current-status.md](docs/current-status.md).
@@ -309,6 +311,8 @@ TCP fallback uses:
 ```text
 u32 big-endian length || encoded_packet
 ```
+
+TCP transport still encrypts payloads with ChaCha20-Poly1305 AEAD, but the business `Data` fast path no longer uses the RUDP send window, unacked retransmission buffer, ReceiveState reordering, or Data Ack to advance sending. `Ack` packets are still used for the `OpenConnection` handshake. TCP fallback reduces fspeed-rs protocol overhead and improves stability/throughput when UDP is unavailable; it is still a reachability fallback, not guaranteed acceleration.
 
 ## fake-TCP Mode (Linux-only experimental)
 

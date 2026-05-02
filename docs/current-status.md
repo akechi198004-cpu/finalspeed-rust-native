@@ -23,7 +23,7 @@
 - `OpenConnection` 的 timestamp 校验窗口为 300 秒。
 - Server 侧支持基于 socket address 的 target allowlist。
 - 会话级收发状态支持累计 ACK、有序交付、重复包丢弃、乱序缓冲。
-- UDP 路径已接入重传任务；TCP transport 不启动重传任务。
+- UDP 路径已接入重传任务；TCP transport 不启动重传任务，且业务 Data fast path 不使用 RUDP send window、unacked buffer、ReceiveState 重排或 Data Ack。
 - Client/Server 均支持 encrypted keepalive、tombstone、未知连接告警限速、`last_activity` 跟踪与 idle sweep。
 - GitHub Actions 在 Linux/Windows 构建并上传 release artifacts。
 
@@ -44,7 +44,7 @@
 ## 实验性特征
 
 - 当前可靠性运行时已启用，但较简化：固定 RTO、固定 packet 窗口、仅累计 ACK。
-- TCP fallback 在 TCP stream 上复用同一套 packet/crypto/ACK 处理，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务。
+- TCP fallback 使用 `u32` big-endian length-prefixed frame，在 TCP stream 上承载同一套 encoded packet 与 AEAD payload。它依赖 OS TCP 的可靠性和有序性，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务，不等待 RUDP send window，不保存 Data unacked buffer，不发送业务 Data Ack。`Ack` 仍用于 `OpenConnection` handshake。
 - fake-TCP transport 使用 `--transport faketcp`，仅面向 Linux，是 raw packet carrier MVP：网络外观看是 TCP 端口，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP 连接。它需要 root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口；Windows 会返回 `fake-TCP transport is only supported on Linux`。Linux 内核可能对 fake-TCP 端口发送 RST，运行 server 时可能需要手动阻止，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前未自动执行 sudo、iptables 或 nftables。
 - fake-TCP 当前使用 pnet datalink/AF_PACKET，支持 IPv4 TCP header build/parse、checksum、端口/peer 过滤和 encoded packet payload carrier；尚未实现完整 SYN/SYN-ACK/ACK 状态机，可能需要 handshake/state-machine hardening，不建议生产使用。
 - SOCKS5 适合浏览器与 curl 测试，但会产生大量短会话，应视为实验性便利层。
@@ -86,6 +86,7 @@ timestamp_ms=<unix_epoch_milliseconds>
 - ACK 为累计确认：`ack = N` 表示序号 `<= N` 已连续收到。
 - 接收端接受到加密 `Data` 后会回加密 `Ack`。
 - 发送端收到累计 ACK 后移除对应未确认 packet。
+- 以上 RUDP 可靠性规则仅适用于 UDP/fake-TCP packet data path；TCP transport 的业务 Data 到达后直接解密并按 TCP frame 顺序交付。
 - UDP 重传扫描间隔：`200 ms`。
 - 初始/固定 RTO：`1000 ms`。
 - 最大重传次数：`20`。

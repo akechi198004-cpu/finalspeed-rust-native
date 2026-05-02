@@ -80,7 +80,7 @@ packet type 定义为 `OpenConnection = 1`、`Data = 2`、`Ack = 3`、`Close = 4
 ## Transport 模型
 
 - UDP：一个 UDP datagram 对应一个 encoded packet。
-- TCP fallback：`u32` big-endian length-prefixed frame + encoded packet，使用 OS `TcpListener` / `TcpStream`。
+- TCP fallback：`u32` big-endian length-prefixed frame + encoded packet，使用 OS `TcpListener` / `TcpStream`。payload 仍使用 ChaCha20-Poly1305 AEAD；业务 Data fast path 依赖 OS TCP 的可靠性和有序性，不使用 RUDP send window、unacked buffer、ReceiveState 重排或 Data Ack。
 - fake-TCP：`IPv4 header || TCP header || encoded_packet`，网络外观看是 TCP 端口，但 payload 是现有 encoded packet。packet header 格式不变，payload 仍使用 ChaCha20-Poly1305 AEAD 加密。
 
 fake-TCP 是 Linux-only experimental 功能。真实收发需要 raw packet injection/capture、root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口，并且可能需要手动阻止 Linux kernel RST，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前实现已接入 pnet datalink/AF_PACKET raw backend，但未实现完整 TCP 三次握手状态机；Windows 运行时会返回 `fake-TCP transport is only supported on Linux`。
@@ -109,7 +109,7 @@ timestamp_ms=1682390884000
 - 重传扫描周期为 `200 ms`；
 - 最大重传次数为 `20`；
 - 默认收发窗口为 `1024` packets；
-- TCP 与 UDP 路径都会启动重传任务。
+- UDP/fake-TCP packet data path 使用该 RUDP-style 可靠性；TCP transport 不启动重传任务，也不让业务 Data 依赖累计 ACK 推进发送。
 
 当前可靠性限制：
 

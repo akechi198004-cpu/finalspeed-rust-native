@@ -1224,15 +1224,6 @@ pub async fn run_tcp(
                                                                         let send_state_arc =
                                                                             session_handle
                                                                                 .send_state;
-                                                                        let receive_state_arc =
-                                                                            session_handle
-                                                                                .receive_state;
-                                                                        let window_notify =
-                                                                            session_handle
-                                                                                .window_notify;
-                                                                        let close_notify =
-                                                                            session_handle
-                                                                                .close_notify;
 
                                                                         loop {
                                                                             match t_read_half
@@ -1251,44 +1242,16 @@ pub async fn run_tcp(
                                                                                         &tcp_buf
                                                                                             [..n];
 
-                                                                                    loop {
-                                                                                        let can_send = {
-                                                                                            let state = send_state_arc.lock().await;
-                                                                                            state.can_send()
-                                                                                        };
-                                                                                        if can_send
-                                                                                        {
-                                                                                            break;
-                                                                                        }
-                                                                                        tokio::select! {
-                                                                                            _ = window_notify.notified() => {},
-                                                                                            _ = close_notify.notified() => {
-                                                                                                tracing::info!("Session closed, stopping server TCP reader for {}", conn_id);
-                                                                                                return;
-                                                                                            }
-                                                                                        }
-                                                                                    }
-
                                                                                     let seq = {
                                                                                         let mut state = send_state_arc.lock().await;
                                                                                         state.next_seq()
                                                                                     };
 
-                                                                                    let current_ack = {
-                                                                                        let state = receive_state_arc.lock().await;
-                                                                                        state.generate_ack()
-                                                                                    };
-
-                                                                                    if let Ok(mut data_packet) = Packet::try_new(PacketType::Data, FLAG_ENCRYPTED, conn_id, seq, current_ack, 0, Bytes::new()) {
+                                                                                    if let Ok(mut data_packet) = Packet::try_new(PacketType::Data, FLAG_ENCRYPTED, conn_id, seq, 0, 0, Bytes::new()) {
                                                                                         let aad = build_aad(&data_packet.header);
                                                                                         if let Ok(encrypted_payload) = encrypt_payload(plaintext, &read_key, &aad) {
                                                                                             data_packet.payload = encrypted_payload.clone();
                                                                                             data_packet.header.payload_len = encrypted_payload.len() as u16;
-
-                                                                                            {
-                                                                                                let mut state = send_state_arc.lock().await;
-                                                                                                state.save_unacked(seq, data_packet.clone());
-                                                                                            }
 
                                                                                             if let Ok(encoded) = encode_packet(&data_packet) {
                                                                                                 if let Err(e) = read_tx_out.send(Bytes::from(encoded)).await {
@@ -1525,12 +1488,10 @@ pub async fn run_tcp(
                                                         session_mgr_c.lookup(&conn_id).await
                                                     {
                                                         session.touch();
-                                                        {
-                                                            let mut state =
-                                                                session.send_state.lock().await;
-                                                            state.handle_ack(packet.header.ack);
-                                                        }
-                                                        session.window_notify.notify_waiters();
+                                                        tracing::debug!(
+                                                            "Ignoring TCP Data Ack for established ConnectionId: {}",
+                                                            conn_id
+                                                        );
                                                     } else {
                                                         use crate::tunnel::session::UnknownState;
                                                         match session_mgr_c
@@ -1567,116 +1528,55 @@ pub async fn run_tcp(
 
                                                 let read_key = derive_key(&secret_c);
                                                 let aad = build_aad(&packet.header);
-                                                let payload_encrypted = packet.payload.clone();
-                                                let tx_out_ack = tx_out_c.clone();
-
-                                                tokio::spawn(async move {
-                                                    match decrypt_payload(
-                                                        &payload_encrypted,
-                                                        &read_key,
-                                                        &aad,
-                                                    ) {
-                                                        Ok(plaintext) => {
-                                                            if let Some(session) =
-                                                                session_mgr_c.lookup(&conn_id).await
+                                                match decrypt_payload(
+                                                    &packet.payload,
+                                                    &read_key,
+                                                    &aad,
+                                                ) {
+                                                    Ok(plaintext) => {
+                                                        if let Some(session) =
+                                                            session_mgr_c.lookup(&conn_id).await
+                                                        {
+                                                            session.touch();
+                                                            if let Err(e) =
+                                                                session.sender.send(plaintext).await
                                                             {
-                                                                session.touch();
-                                                                let sequence =
-                                                                    packet.header.sequence;
-
-                                                                let delivered_payloads = {
-                                                                    let mut state = session
-                                                                        .receive_state
-                                                                        .lock()
-                                                                        .await;
-                                                                    state.receive_packet(
-                                                                        sequence, plaintext,
-                                                                    )
-                                                                };
-
-                                                                for payload in delivered_payloads {
-                                                                    if let Err(e) = session
-                                                                        .sender
-                                                                        .send(payload)
-                                                                        .await
-                                                                    {
-                                                                        tracing::warn!(
-                                                                            "Failed to forward data to session writer task: {}",
-                                                                            e
-                                                                        );
-                                                                    }
-                                                                }
-
-                                                                let ack_num = {
-                                                                    let state = session
-                                                                        .receive_state
-                                                                        .lock()
-                                                                        .await;
-                                                                    state.generate_ack()
-                                                                };
-
-                                                                if let Ok(mut ack_packet) =
-                                                                    Packet::try_new(
-                                                                        PacketType::Ack,
-                                                                        FLAG_ENCRYPTED,
-                                                                        conn_id,
-                                                                        0,
-                                                                        ack_num,
-                                                                        0,
-                                                                        Bytes::new(),
-                                                                    )
-                                                                {
-                                                                    let ack_aad = build_aad(
-                                                                        &ack_packet.header,
+                                                                tracing::warn!(
+                                                                    "Failed to forward data to session writer task: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        } else {
+                                                            use crate::tunnel::session::UnknownState;
+                                                            match session_mgr_c
+                                                                .check_unknown(&conn_id)
+                                                                .await
+                                                            {
+                                                                UnknownState::RecentlyClosed => {
+                                                                    tracing::debug!(
+                                                                        "Dropping late Data packet for recently closed ConnectionId: {}",
+                                                                        conn_id
                                                                     );
-                                                                    let ack_payload = crate::protocol::payload::build_ack_payload();
-                                                                    if let Ok(encrypted_ack) =
-                                                                        encrypt_payload(
-                                                                            ack_payload.as_bytes(),
-                                                                            &read_key,
-                                                                            &ack_aad,
-                                                                        )
-                                                                    {
-                                                                        ack_packet.payload =
-                                                                            encrypted_ack.clone();
-                                                                        ack_packet
-                                                                            .header
-                                                                            .payload_len =
-                                                                            encrypted_ack.len()
-                                                                                as u16;
-                                                                        if let Ok(encoded) =
-                                                                            encode_packet(
-                                                                                &ack_packet,
-                                                                            )
-                                                                        {
-                                                                            let _ = tx_out_ack
-                                                                                .send(Bytes::from(
-                                                                                    encoded,
-                                                                                ))
-                                                                                .await;
-                                                                        }
-                                                                    }
                                                                 }
-                                                            } else {
-                                                                use crate::tunnel::session::UnknownState;
-                                                                match session_mgr_c.check_unknown(&conn_id).await {
-                                                                    UnknownState::RecentlyClosed => {
-                                                                        tracing::debug!("Dropping late Data packet for recently closed ConnectionId: {}", conn_id);
-                                                                    }
-                                                                    UnknownState::RateLimited => {
-                                                                        tracing::debug!("Dropping repeated Data packet for unknown ConnectionId: {}", conn_id);
-                                                                    }
-                                                                    UnknownState::WarnFirstTime => {
-                                                                        tracing::warn!("Received Data packet for unknown ConnectionId: {}", conn_id);
-                                                                    }
+                                                                UnknownState::RateLimited => {
+                                                                    tracing::debug!(
+                                                                        "Dropping repeated Data packet for unknown ConnectionId: {}",
+                                                                        conn_id
+                                                                    );
+                                                                }
+                                                                UnknownState::WarnFirstTime => {
+                                                                    tracing::warn!(
+                                                                        "Received Data packet for unknown ConnectionId: {}",
+                                                                        conn_id
+                                                                    );
                                                                 }
                                                             }
                                                         }
-                                                        Err(e) => {
-                                                            tracing::warn!(peer_address = %peer, error = %e, "Failed to decrypt Data payload");
-                                                        }
                                                     }
-                                                });
+                                                    Err(e) => {
+                                                        tracing::warn!(peer_address = %peer, error = %e, "Failed to decrypt Data payload");
+                                                    }
+                                                }
                                             }
                                             PacketType::Close => {
                                                 if packet.header.flags & FLAG_ENCRYPTED == 0 {
