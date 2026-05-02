@@ -1,6 +1,10 @@
+//! 会话 (Session) 管理模块。
+//! 包含 Session 的生命周期、Idle Sweep、Tombstone 及速率限制过滤等机制。
+
 use std::fmt;
 
-/// A unique identifier for a logical connection/session over the UDP tunnel.
+/// 逻辑隧道的会话 ID。
+/// 客户端发起的每一个 TCP 连接都会对应一个自增的 ConnectionId。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(pub u32);
 
@@ -17,23 +21,32 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
+/// 未知连接包的处理状态。用于减少错误重传造成的日志刷屏。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownState {
+    /// 命中了 Tombstone，连接近期已关闭。
     RecentlyClosed,
+    /// 未知且处于限速警告期内。
     RateLimited,
+    /// 第一次遇到未知 ConnectionId，允许记录 Warn 日志。
     WarnFirstTime,
 }
 
+/// 逻辑 Session 的当前状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
+    /// 正在握手等待目标地址等。
     Pending,
+    /// 已建立可以正常收发。
     Established,
 }
 
 use crate::reliability::{ReceiveState, SendState};
 use tokio::sync::{Mutex, Notify};
 
-/// Handle to a logical session, used to send data to the TCP writer task.
+/// SessionHandle 包装了处理逻辑连接相关的通道和状态。
+/// 被 UDP Receive 循环使用，将会话的数据分发到对应的 TCP Writer task，
+/// 同时也持有了滑动窗口的状态以便验证包。
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     pub sender: mpsc::Sender<Bytes>,

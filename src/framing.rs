@@ -1,12 +1,16 @@
+//! TCP Transport 的帧边界处理模块。
+//! 实现了 4-byte length-prefixed 的读写操作。
+
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// TCP 帧的最大限制为 2MB。
 pub const MAX_FRAME_SIZE: u32 = 2 * 1024 * 1024; // 2MB
 
-/// Writes a length-prefixed frame to the writer.
-/// The frame format is:
-/// [length: 4 bytes big-endian][encoded_packet bytes]
+/// 写入带长度前缀的数据帧到异步流。
+/// TCP Transport 使用的帧格式为：
+/// `[length: 4 bytes big-endian][encoded_packet bytes]`
 pub async fn write_frame<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     data: &[u8],
@@ -25,18 +29,18 @@ pub async fn write_frame<W: AsyncWriteExt + Unpin>(
         ));
     }
 
-    // Write length
+    // 写入 big-endian 的 4 字节长度
     writer.write_u32(len).await?;
-    // Write data
+    // 写入实际数据包
     writer.write_all(data).await?;
     writer.flush().await?;
 
     Ok(())
 }
 
-/// Reads a length-prefixed frame from the reader.
+/// 从异步流中读取带长度前缀的数据帧。
 pub async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
-    // Read length
+    // 读取长度
     let len = match reader.read_u32().await {
         Ok(l) => l,
         Err(e) => {

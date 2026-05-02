@@ -1,3 +1,6 @@
+//! 加密模块。
+//! 使用 HKDF-SHA256 派生密钥，并使用 ChaCha20-Poly1305 AEAD 加密/解密 payload。
+
 use crate::error::{FSpeedError, Result};
 use crate::packet::Header;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -10,9 +13,13 @@ use rand::Rng;
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// ChaCha20-Poly1305 使用 12 字节 Nonce。
 pub const NONCE_LEN: usize = 12;
 
-/// Derives a 32-byte key from the shared secret using HKDF-SHA256.
+/// 使用 HKDF-SHA256 从 CLI 的 shared secret 派生 32 字节的 AEAD 密钥。
+///
+/// `Salt` 固定为 `fspeed-rs-v1`。
+/// `Info` 固定为 `fspeed-rs tunnel aead v1`。
 pub fn derive_key(secret: &str) -> [u8; 32] {
     let hkdf = Hkdf::<Sha256>::new(Some(b"fspeed-rs-v1"), secret.as_bytes());
     let mut key = [0u8; 32];
@@ -21,8 +28,9 @@ pub fn derive_key(secret: &str) -> [u8; 32] {
     key
 }
 
-/// Builds AAD (Additional Authenticated Data) from the PacketHeader.
-/// To keep payload length changes simple, payload_len is NOT included in AAD.
+/// 从 Packet Header 构建 AAD (附加认证数据)。
+/// 包含 magic, version, packet_type, flags, connection_id, sequence, ack, window。
+/// 为了保持处理简单，因为加密会增加 Payload 长度，`payload_len` 不纳入 AAD 计算。
 pub fn build_aad(header: &Header) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(20);
     buf.put_u16(header.magic);
@@ -38,6 +46,9 @@ pub fn build_aad(header: &Header) -> Vec<u8> {
 
 /// Encrypts the payload using ChaCha20-Poly1305.
 /// Returns: nonce (12 bytes) || ciphertext_and_tag
+/// 对有效载荷进行加密。
+/// 采用 ChaCha20-Poly1305 算法。生成的随机 Nonce 会直接附加在密文前端。
+/// 返回的格式为：`[nonce(12 bytes)] || [ciphertext_and_tag]`。
 pub fn encrypt_payload(plaintext: &[u8], key: &[u8; 32], aad: &[u8]) -> Result<Bytes> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
 
@@ -63,6 +74,9 @@ pub fn encrypt_payload(plaintext: &[u8], key: &[u8; 32], aad: &[u8]) -> Result<B
 
 /// Decrypts the payload using ChaCha20-Poly1305.
 /// Expects encrypted_payload: nonce (12 bytes) || ciphertext_and_tag
+/// 对有效载荷进行解密。
+/// 输入必须是 `[nonce(12 bytes)] || [ciphertext_and_tag]` 格式。
+/// 如果完整性校验失败或长度不够，则返回错误。
 pub fn decrypt_payload(encrypted_payload: &[u8], key: &[u8; 32], aad: &[u8]) -> Result<Bytes> {
     if encrypted_payload.len() < NONCE_LEN {
         return Err(FSpeedError::EncryptedPayloadTooShort);
@@ -85,6 +99,7 @@ pub fn decrypt_payload(encrypted_payload: &[u8], key: &[u8; 32], aad: &[u8]) -> 
     Ok(Bytes::from(plaintext))
 }
 
+/// 获取当前的 Unix 时间戳（毫秒）。
 pub fn current_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -93,6 +108,8 @@ pub fn current_timestamp_ms() -> u64 {
 }
 
 /// Validates that the given timestamp is within ±300 seconds (300,000 ms) of the current time.
+/// 校验时间戳是否在允许的偏差窗口内（当前硬编码为前后 300 秒）。
+/// 用于 OpenConnection 防止重放攻击的初步防护。
 pub fn validate_timestamp_ms(timestamp_ms: u64) -> Result<()> {
     let current = current_timestamp_ms();
     let diff = current.abs_diff(timestamp_ms);

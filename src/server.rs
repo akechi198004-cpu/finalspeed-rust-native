@@ -1,3 +1,6 @@
+//! Server 核心逻辑。
+//! 包含 UDP 发送接收循环、TCP 监听与 session 管理等。
+
 use bytes::{Bytes, BytesMut};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -62,6 +65,7 @@ pub async fn validate_open_connection_packet(
     Ok(payload.target)
 }
 
+/// 启动 Server 服务，并根据指定的 `TransportMode` 派发给对应的任务执行器。
 pub async fn run(
     listen: SocketAddr,
     secret: String,
@@ -164,6 +168,13 @@ fn spawn_tcp_keepalive_task(
     });
 }
 
+/// 运行 UDP 模式的 Server。
+///
+/// 特性：
+/// - 单个 UDP Socket 循环接收所有客户端请求。
+/// - 一个 UDP datagram 等于一个 encoded packet。
+/// - 需要对连接（ConnectionId）和收发状态分别进行维护管理。
+/// - 会开启独立的重传（retransmission）任务以实现简易的 RUDP。
 #[allow(clippy::collapsible_if)]
 pub async fn run_udp(
     listen: SocketAddr,
@@ -924,6 +935,12 @@ pub async fn run_udp(
     }
 }
 
+/// 运行 TCP 模式的 Server。
+///
+/// 特性：
+/// - 每个 Client 会建立一条 TCP 长连接。
+/// - 基于 4 字节的 Big-Endian 长度前缀进行数据帧的切分封装。
+/// - 不开启重传扫描任务，完全依赖 OS TCP 提供的可靠性语义。
 #[allow(clippy::collapsible_if)]
 pub async fn run_tcp(
     listen: SocketAddr,

@@ -1,3 +1,5 @@
+//! FSpeed-RS 命令行入口。
+//! 解析命令行参数并启动 Server 或 Client 模式。
 pub mod cli;
 pub mod client;
 pub mod config;

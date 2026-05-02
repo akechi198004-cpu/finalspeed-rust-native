@@ -1,19 +1,32 @@
+//! 各类 Packet 的明文/密文 payload 构造与解析模块。
+//! 例如 OpenConnection 的 target 解析和 Error 文本解析等。
+
 use std::str;
 
 use crate::error::{FSpeedError, Result};
 
+/// 解析后的 OpenConnection 结构。
+/// 包含握手目标的地址以及防重放用的时间戳。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenConnectionRequest {
     pub target: String,
     pub timestamp_ms: u64,
 }
 
+/// 解析后的 Error 返回结构。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorResponse {
     pub status: String,
     pub reason: String,
 }
 
+/// 解析 Error 数据包的明文 payload。
+///
+/// 格式类似：
+/// ```text
+/// status=error
+/// reason=<reason text>
+/// ```
 pub fn parse_error_payload(payload: &[u8]) -> Result<ErrorResponse> {
     let payload_str = str::from_utf8(payload).map_err(|_| FSpeedError::InvalidPayloadFormat)?;
 
@@ -59,14 +72,26 @@ pub fn parse_error_payload(payload: &[u8]) -> Result<ErrorResponse> {
     Ok(ErrorResponse { status, reason })
 }
 
+/// 构造 Error 数据包的明文 payload。
 pub fn build_error_payload(reason: &str) -> String {
     format!("status=error\nreason={}", reason)
 }
 
+/// 构造 Ack 数据包的明文 payload。
+/// 真正的确认信息在 Header 的 `ack` 字段中，此处的 Payload 仅为象征性的 "status=ok"。
 pub fn build_ack_payload() -> String {
     "status=ok\n".to_string()
 }
 
+/// 解析 OpenConnection 数据包的明文 payload（解密后）。
+///
+/// 期望的格式：
+/// ```text
+/// target=<host-or-ip>:<port>
+/// timestamp_ms=<unix_epoch_milliseconds>
+/// ```
+///
+/// 会拒绝缺失字段、旧协议字段（如 `secret`, `auth`, `nonce`）、重复 key 或未知的 key。
 pub fn parse_open_connection_payload(payload: &[u8]) -> Result<OpenConnectionRequest> {
     let payload_str = str::from_utf8(payload).map_err(|_| FSpeedError::InvalidPayloadFormat)?;
 

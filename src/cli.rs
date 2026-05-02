@@ -1,3 +1,6 @@
+//! CLI 参数解析模块。
+//! 提供 Server 和 Client 的命令结构定义。
+
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -15,54 +18,62 @@ pub struct Cli {
     pub command: Commands,
 }
 
+/// 传输层模式选项。
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Default)]
 pub enum TransportMode {
+    /// 默认使用 UDP 传输。
+    ///
+    /// 开启 RUDP 级的重传任务，并在 UDP 数据报文基础上封装。
     #[default]
     Udp,
+    /// 备用 TCP 传输。
+    ///
+    /// 使用 4 字节长度前缀 Framing，依赖 OS TCP 的可靠性，
+    /// 不再启动自身的重传任务。
     Tcp,
 }
 
+/// 支持的命令行子命令，分别为 Server 和 Client。
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Start the server to accept incoming tunnel connections
+    /// 启动 Server 端接受客户端隧道的连接。
     Server {
         /// Address to listen on (e.g., 0.0.0.0:150)
         #[arg(long, default_value = "0.0.0.0:150")]
         listen: SocketAddr,
 
-        /// Shared secret for authentication
+        /// 预共享的密码，通过 HKDF-SHA256 派生会话密钥。
         #[arg(long)]
         secret: String,
 
-        /// Optional comma-separated list of allowed target addresses (e.g., 127.0.0.1:22,127.0.0.1:80)
+        /// 可选的目标地址白名单列表（逗号分隔）。开启时会拒绝不在此名单中的连接目标。
         #[arg(long, value_delimiter = ',')]
         allow: Option<Vec<SocketAddr>>,
 
-        /// Transport mode to use (udp or tcp)
+        /// 指定底层使用的传输协议。
         #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
         transport: TransportMode,
     },
 
-    /// Start the client to forward local TCP connections to the server
+    /// 启动 Client 端代理本地 TCP 连接至服务端。
     Client {
         /// Server address to connect to (e.g., example.com:150)
         #[arg(long)]
         server: String,
 
-        /// Shared secret for authentication
+        /// 预共享的密码，必须与服务端保持一致。
         #[arg(long)]
         secret: String,
 
-        /// Port mappings in the format local_addr:local_port=target_addr:target_port
-        /// (e.g., 127.0.0.1:2222=127.0.0.1:22 or 127.0.0.1:8080=example.com:80)
+        /// 端口映射配置。格式为 `local_addr:local_port=target_addr:target_port`。
         #[arg(long, value_parser = parse_port_map, required = false)]
         map: Vec<PortMap>,
 
-        /// Local SOCKS5 listener address (e.g., 127.0.0.1:1080)
+        /// 开启基于 SOCKS5 (no-auth) 的本地监听代理（如 `127.0.0.1:1080`）。
         #[arg(long, required = false)]
         socks5: Option<SocketAddr>,
 
-        /// Transport mode to use (udp or tcp)
+        /// 指定底层使用的传输协议。必须与服务端配置相同。
         #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
         transport: TransportMode,
     },

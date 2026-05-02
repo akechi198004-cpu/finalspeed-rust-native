@@ -1,8 +1,12 @@
+//! SOCKS5 代理客户端侧解析模块。
+//! 处理 SOCKS5 握手和 CONNECT 请求的解析。
+
 use anyhow::{Result, anyhow};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// SOCKS 协议版本 5。
 pub const SOCKS5_VERSION: u8 = 0x05;
 
 pub const AUTH_NO_AUTH: u8 = 0x00;
@@ -18,6 +22,7 @@ pub const REP_SUCCESS: u8 = 0x00;
 pub const REP_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 pub const REP_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
 
+/// SOCKS5 解析后期望连接的目标地址。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocksTarget {
     pub host: String,
@@ -30,6 +35,7 @@ impl std::fmt::Display for SocksTarget {
     }
 }
 
+/// 处理 SOCKS5 的第一阶段握手 (Greeting)，仅支持 No-Auth 模式。
 pub async fn handle_socks5_greeting(stream: &mut TcpStream) -> Result<()> {
     let mut header = [0u8; 2];
     stream.read_exact(&mut header).await?;
@@ -55,6 +61,8 @@ pub async fn handle_socks5_greeting(stream: &mut TcpStream) -> Result<()> {
     }
 }
 
+/// 读取并解析 SOCKS5 CONNECT 请求，支持 IPv4、Domain 和 IPv6 地址类型。
+/// 当解析成功且为 CONNECT 指令时，将提取出目标 host 和 port。
 pub async fn handle_socks5_request(stream: &mut TcpStream) -> Result<SocksTarget> {
     let mut header = [0u8; 4];
     stream.read_exact(&mut header).await?;
@@ -120,6 +128,8 @@ pub async fn handle_socks5_request(stream: &mut TcpStream) -> Result<SocksTarget
     Ok(target)
 }
 
+/// 告诉 SOCKS5 Client 代理已经建立成功，可以开始传输数据了。
+/// （返回全 0 的绑定地址，客户端多数时候不检查此字段）
 pub async fn send_socks5_success<W: AsyncWriteExt + Unpin>(stream: &mut W) -> Result<()> {
     let response = [
         SOCKS5_VERSION,
