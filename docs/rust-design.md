@@ -12,7 +12,7 @@
 - Client 通过 `--map` 本地监听和/或本地 SOCKS5 监听接收连接。
 - UDP 路径中一个 datagram 对应一个 encoded packet。
 - TCP 路径中通过 client->server TCP stream 发送 framed packet。
-- fake-TCP 路径从网络外观看是 TCP packet，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP connection；当前只实现 IPv4/TCP packet wrapper helper 与 runtime 边界。
+- fake-TCP 路径从网络外观看是 TCP packet，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP connection；当前 Linux backend 使用 pnet datalink/AF_PACKET 收发 IPv4 fake TCP packet。
 - payload 使用 ChaCha20-Poly1305 加密，key 由 `--secret` 经 HKDF-SHA256 派生。
 - header 保持明文，但通过 AEAD AAD 做完整性认证。
 - 协议当前仅保证 Rust client 与 Rust server 之间自兼容。
@@ -83,7 +83,9 @@ packet type 定义为 `OpenConnection = 1`、`Data = 2`、`Ack = 3`、`Close = 4
 - TCP fallback：`u32` big-endian length-prefixed frame + encoded packet，使用 OS `TcpListener` / `TcpStream`。
 - fake-TCP：`IPv4 header || TCP header || encoded_packet`，网络外观看是 TCP 端口，但 payload 是现有 encoded packet。packet header 格式不变，payload 仍使用 ChaCha20-Poly1305 AEAD 加密。
 
-fake-TCP 是 Linux-only experimental 功能。真实收发需要 raw packet injection/capture、root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口，并且可能需要手动阻止 Linux kernel RST，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前实现尚未接入 raw socket 后端，也未实现完整 TCP 三次握手状态机；Windows 运行时会返回 `fake-TCP transport is only supported on Linux`。
+fake-TCP 是 Linux-only experimental 功能。真实收发需要 raw packet injection/capture、root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口，并且可能需要手动阻止 Linux kernel RST，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前实现已接入 pnet datalink/AF_PACKET raw backend，但未实现完整 TCP 三次握手状态机；Windows 运行时会返回 `fake-TCP transport is only supported on Linux`。
+
+MVP 限制：仅 IPv4；不支持 IPv6；不实现完整 TCP congestion/window 或真实 stream；自动选择可用 IPv4 网卡，复杂路由/多网卡环境可能失败。
 
 ## OpenConnection
 

@@ -57,13 +57,15 @@ IPv4 header || TCP header || encoded_packet
 
 fake-TCP 从网络外观看是 TCP packet，云防火墙/安全组应放行所选 TCP 端口，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP connection。每个 fake-TCP payload 承载一个现有 `encoded_packet`，packet header 格式不变，payload 仍使用 ChaCha20-Poly1305 AEAD 加密，明文 header 仍参与 AAD 认证。当前 helper 仅支持 IPv4，已实现 IPv4 checksum 与 TCP pseudo-header checksum 的构造/校验，以及目标端口/源 peer 过滤。
 
-当前 fake-TCP raw socket 收发后端尚未接入 client/server data path；运行 `--transport faketcp` 会进入清晰的 experimental runtime 边界。完整实现需要 Linux raw packet send/receive 权限（root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`），且可能需要手动阻止 Linux kernel RST，例如：
+当前 fake-TCP Linux backend 使用 pnet datalink/AF_PACKET 收发二层 Ethernet frame，并已接入 client/server data path。运行需要 Linux raw packet send/receive 权限（root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`），且可能需要手动阻止 Linux kernel RST，例如：
 
 ```bash
 sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP
 ```
 
 程序不会自动执行 sudo，也不会自动修改 iptables/nftables。Windows 不支持 fake-TCP，并返回 `fake-TCP transport is only supported on Linux`。
+
+MVP 限制：仅 IPv4；不实现完整 TCP 三次握手、拥塞控制或真实 stream；当前使用 PSH/ACK packet 承载一个 encoded packet；自动选择可用 IPv4 网卡，复杂路由或多网卡环境可能失败；部分 NAT/防火墙可能丢弃无握手 TCP payload。
 
 ## 加密（Encryption）
 

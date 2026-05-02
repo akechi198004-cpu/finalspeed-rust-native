@@ -19,7 +19,7 @@ use crate::protocol::payload::{
     build_ack_payload, build_error_payload, parse_open_connection_payload,
 };
 use crate::protocol::{decode_packet, encode_packet};
-use crate::transport::{ConnectionRoute, ConnectionTable};
+use crate::transport::{ConnectionRoute, ConnectionTable, PacketIo};
 use crate::tunnel::keepalive::{
     build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
 };
@@ -83,20 +83,23 @@ pub async fn run(
 
 async fn run_faketcp(
     listen: SocketAddr,
-    _secret: String,
-    _allow: Option<Vec<SocketAddr>>,
+    secret: String,
+    allow: Option<Vec<SocketAddr>>,
 ) -> anyhow::Result<()> {
     tracing::warn!(
         listen = %listen,
         "fake-TCP is Linux-only experimental raw packet transport; it is not TcpListener/TcpStream"
     );
-    Err(crate::transport::faketcp::linux_impl::runtime_error().into())
+    let endpoint = Arc::new(
+        crate::transport::faketcp::linux_impl::FakeTcpEndpoint::bind_server(listen).await?,
+    );
+    run_packet_server(endpoint, secret, allow).await
 }
 
-fn spawn_udp_keepalive_task(
+fn spawn_udp_keepalive_task<S: PacketIo>(
     conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ServerSessionManager,
-    socket: Arc<UdpSocket>,
+    socket: Arc<S>,
     peer_addr: SocketAddr,
     secret: String,
 ) {
@@ -196,6 +199,17 @@ pub async fn run_udp(
     secret: String,
     allow: Option<Vec<SocketAddr>>,
 ) -> anyhow::Result<()> {
+    let socket = Arc::new(UdpSocket::bind(listen).await?);
+    tracing::info!("Server UDP socket bound to {}", listen);
+    run_packet_server(socket, secret, allow).await
+}
+
+#[allow(clippy::collapsible_if)]
+async fn run_packet_server<S: PacketIo>(
+    socket: Arc<S>,
+    secret: String,
+    allow: Option<Vec<SocketAddr>>,
+) -> anyhow::Result<()> {
     if let Some(ref allowed) = allow {
         if allowed.is_empty() {
             return Err(anyhow::anyhow!(
@@ -203,9 +217,6 @@ pub async fn run_udp(
             ));
         }
     }
-
-    let socket = Arc::new(UdpSocket::bind(listen).await?);
-    tracing::info!("Server UDP socket bound to {}", listen);
 
     let connection_table = Arc::new(RwLock::new(ConnectionTable::new()));
     let session_manager = ServerSessionManager::new();

@@ -36,7 +36,7 @@ const TRANSPORT_LONG_HELP: &str = "\
 Transport mode:
   udp = UDP datagram transport with RUDP-style reliability
   tcp = TCP fallback using length-prefixed encrypted packets
-  faketcp = Linux-only experimental fake TCP transport. Requires root or CAP_NET_RAW/CAP_NET_ADMIN. Cloud firewall should allow the selected TCP port. Not supported on Windows.";
+  faketcp = Linux-only experimental fake TCP packet transport. Requires root or CAP_NET_RAW/CAP_NET_ADMIN. Firewall should allow the selected TCP port. Not real TCP, not supported on Windows.";
 
 /// 支持的命令行子命令，分别为 Server 和 Client。
 #[derive(Subcommand, Debug)]
@@ -307,9 +307,9 @@ mod tests {
 
         for help in [server_help, client_help] {
             assert!(help.contains("faketcp"));
-            assert!(help.contains("Linux-only experimental fake TCP transport"));
+            assert!(help.contains("Linux-only experimental fake TCP packet transport"));
             assert!(help.contains("CAP_NET_RAW/CAP_NET_ADMIN"));
-            assert!(help.contains("Not supported on Windows"));
+            assert!(help.contains("Not real TCP, not supported on Windows"));
         }
     }
 }

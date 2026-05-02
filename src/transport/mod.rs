@@ -4,10 +4,49 @@
 pub mod faketcp;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::tunnel::session::ConnectionId;
+use tokio::net::UdpSocket;
+
+pub type PacketIoFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub trait PacketIo: Send + Sync + 'static {
+    fn recv_from<'a>(
+        &'a self,
+        buf: &'a mut [u8],
+    ) -> PacketIoFuture<'a, anyhow::Result<(usize, SocketAddr)>>;
+    fn send_to<'a>(
+        &'a self,
+        buf: &'a [u8],
+        peer: SocketAddr,
+    ) -> PacketIoFuture<'a, anyhow::Result<usize>>;
+    fn local_addr(&self) -> anyhow::Result<SocketAddr>;
+}
+
+impl PacketIo for UdpSocket {
+    fn recv_from<'a>(
+        &'a self,
+        buf: &'a mut [u8],
+    ) -> PacketIoFuture<'a, anyhow::Result<(usize, SocketAddr)>> {
+        Box::pin(async move { Ok(UdpSocket::recv_from(self, buf).await?) })
+    }
+
+    fn send_to<'a>(
+        &'a self,
+        buf: &'a [u8],
+        peer: SocketAddr,
+    ) -> PacketIoFuture<'a, anyhow::Result<usize>> {
+        Box::pin(async move { Ok(UdpSocket::send_to(self, buf, peer).await?) })
+    }
+
+    fn local_addr(&self) -> anyhow::Result<SocketAddr> {
+        Ok(UdpSocket::local_addr(self)?)
+    }
+}
 
 /// 线程安全的 Connection ID 生成器。
 /// 在客户端用于为每一条建立的 TCP 连接分配唯一的逻辑会话 ID。

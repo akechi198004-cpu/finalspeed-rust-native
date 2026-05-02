@@ -8,7 +8,7 @@ use crate::protocol::crypto::{
 use crate::protocol::packet::{FLAG_ENCRYPTED, Packet, PacketType};
 use crate::protocol::payload::parse_error_payload;
 use crate::protocol::{decode_packet, encode_packet};
-use crate::transport::ConnectionIdGenerator;
+use crate::transport::{ConnectionIdGenerator, PacketIo};
 use crate::tunnel::session::{ClientSessionManager, SessionHandle, SessionState};
 
 use bytes::{Bytes, BytesMut};
@@ -42,21 +42,30 @@ pub async fn run(
 
 async fn run_faketcp(
     server: String,
-    _secret: String,
-    _map: Vec<PortMap>,
-    _socks5: Option<SocketAddr>,
+    secret: String,
+    map: Vec<PortMap>,
+    socks5: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
     tracing::warn!(
         server = %server,
         "fake-TCP is Linux-only experimental raw packet transport; it is not TcpListener/TcpStream"
     );
-    Err(crate::transport::faketcp::linux_impl::runtime_error().into())
+    let mut addrs = lookup_host(&server).await?;
+    let server_addr = addrs
+        .find(|addr| addr.is_ipv4())
+        .ok_or_else(|| anyhow::anyhow!("fake-TCP currently supports IPv4 server addresses only"))?;
+    tracing::info!("Resolved fake-TCP server address to {}", server_addr);
+    let socket = Arc::new(
+        crate::transport::faketcp::linux_impl::FakeTcpEndpoint::connect_client(server_addr).await?,
+    );
+    tracing::info!("Client fake-TCP endpoint bound to {}", socket.local_addr()?);
+    run_packet_client(socket, server_addr, secret, map, socks5).await
 }
 
-fn spawn_udp_keepalive_task(
+fn spawn_udp_keepalive_task<S: PacketIo>(
     conn_id: crate::tunnel::session::ConnectionId,
     session_manager: ClientSessionManager,
-    socket: Arc<UdpSocket>,
+    socket: Arc<S>,
     peer_addr: SocketAddr,
     secret: Arc<String>,
 ) {
@@ -158,17 +167,24 @@ pub async fn run_udp(
 ) -> anyhow::Result<()> {
     tracing::info!("Initializing client, mapping {} ports", map.len());
 
-    // Resolve server address
     let mut addrs = lookup_host(&server).await?;
     let server_addr = addrs
         .next()
         .ok_or_else(|| anyhow::anyhow!("Failed to resolve server address: {}", server))?;
     tracing::info!("Resolved server address to {}", server_addr);
 
-    // Bind local UDP socket
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     tracing::info!("Client UDP socket bound to {}", socket.local_addr()?);
+    run_packet_client(socket, server_addr, secret, map, socks5).await
+}
 
+async fn run_packet_client<S: PacketIo>(
+    socket: Arc<S>,
+    server_addr: SocketAddr,
+    secret: String,
+    map: Vec<PortMap>,
+    socks5: Option<SocketAddr>,
+) -> anyhow::Result<()> {
     let id_generator = Arc::new(ConnectionIdGenerator::new());
     let secret_arc = Arc::new(secret);
     let session_manager = ClientSessionManager::new();
