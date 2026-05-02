@@ -94,6 +94,8 @@ TCP fallback 使用如下 framing：
 u32 big-endian length || encoded_packet
 ```
 
+发送端会以 single write 写出完整 frame（length + encoded packet），避免每个 frame 额外 flush。TCP transport 当前默认使用一条 shared outer TCP connection 承载多个逻辑 session；这种方式简单稳定，但多连接测速可能受单条外层 TCP 的吞吐限制。未来可考虑增加 per-session outer TCP 模式。
+
 已建立会话会发送 encrypted keepalive，默认间隔 30 秒；keepalive timeout 为 120 秒，session idle timeout 仍为 300 秒。
 
 TCP transport 仍使用 ChaCha20-Poly1305 AEAD 加密 payload，但业务 `Data` fast path 不再使用 RUDP send window、unacked retransmission buffer、ReceiveState 乱序重排或 Data Ack 推进发送。`Ack` packet 仍用于 `OpenConnection` handshake。TCP fallback 的目标是减少自身协议开销、提升稳定性和吞吐；它解决可达性，不保证“加速”。
@@ -311,6 +313,8 @@ TCP fallback uses:
 ```text
 u32 big-endian length || encoded_packet
 ```
+
+The sender writes each complete frame (length + encoded packet) with a single write and does not flush every frame. TCP transport currently uses one shared outer TCP connection for multiple logical sessions. This keeps the fallback simple and stable, but multi-connection speed tests can be limited by that single outer TCP flow. A future per-session outer TCP mode may be added.
 
 TCP transport still encrypts payloads with ChaCha20-Poly1305 AEAD, but the business `Data` fast path no longer uses the RUDP send window, unacked retransmission buffer, ReceiveState reordering, or Data Ack to advance sending. `Ack` packets are still used for the `OpenConnection` handshake. TCP fallback reduces fspeed-rs protocol overhead and improves stability/throughput when UDP is unavailable; it is still a reachability fallback, not guaranteed acceleration.
 

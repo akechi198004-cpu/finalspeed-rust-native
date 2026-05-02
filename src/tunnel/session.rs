@@ -18,6 +18,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
@@ -43,6 +44,72 @@ pub enum SessionState {
 
 use crate::tunnel::reliability::{ReceiveState, SendState};
 use tokio::sync::{Mutex, Notify};
+
+#[derive(Debug)]
+pub struct TcpTransportStats {
+    started_at: Instant,
+    client_local_read_bytes: AtomicU64,
+    client_outer_write_bytes: AtomicU64,
+    server_outer_read_bytes: AtomicU64,
+    server_target_write_bytes: AtomicU64,
+}
+
+impl Default for TcpTransportStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TcpTransportStats {
+    pub fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            client_local_read_bytes: AtomicU64::new(0),
+            client_outer_write_bytes: AtomicU64::new(0),
+            server_outer_read_bytes: AtomicU64::new(0),
+            server_target_write_bytes: AtomicU64::new(0),
+        }
+    }
+
+    pub fn add_client_local_read(&self, bytes: usize) {
+        self.client_local_read_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn add_client_outer_write(&self, bytes: usize) {
+        self.client_outer_write_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn add_server_outer_read(&self, bytes: usize) {
+        self.server_outer_read_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn add_server_target_write(&self, bytes: usize) {
+        self.server_target_write_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn log_debug(&self, side: &str, conn_id: ConnectionId) {
+        let duration = self.started_at.elapsed();
+        let uploaded_bytes = self.client_local_read_bytes.load(Ordering::Relaxed);
+        let downloaded_bytes = self.server_target_write_bytes.load(Ordering::Relaxed);
+        tracing::debug!(
+            transport = "tcp",
+            side,
+            connection_id = conn_id.0,
+            duration_ms = duration.as_millis() as u64,
+            client_local_read_bytes = uploaded_bytes,
+            client_outer_write_bytes = self.client_outer_write_bytes.load(Ordering::Relaxed),
+            server_outer_read_bytes = self.server_outer_read_bytes.load(Ordering::Relaxed),
+            server_target_write_bytes = downloaded_bytes,
+            uploaded_bytes,
+            downloaded_bytes,
+            "TCP transport session throughput"
+        );
+    }
+}
 
 /// SessionHandle 包装了处理逻辑连接相关的通道和状态。
 /// 被 UDP Receive 循环使用，将会话的数据分发到对应的 TCP Writer task，

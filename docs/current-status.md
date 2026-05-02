@@ -44,7 +44,7 @@
 ## 实验性特征
 
 - 当前可靠性运行时已启用，但较简化：固定 RTO、固定 packet 窗口、仅累计 ACK。
-- TCP fallback 使用 `u32` big-endian length-prefixed frame，在 TCP stream 上承载同一套 encoded packet 与 AEAD payload。它依赖 OS TCP 的可靠性和有序性，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务，不等待 RUDP send window，不保存 Data unacked buffer，不发送业务 Data Ack。`Ack` 仍用于 `OpenConnection` handshake。
+- TCP fallback 使用 `u32` big-endian length-prefixed frame，在 TCP stream 上承载同一套 encoded packet 与 ChaCha20-Poly1305 AEAD payload。发送端以 single write 写出 length + encoded packet，不对每个 frame 额外 flush。当前 TCP transport 默认使用一条 shared outer TCP connection 承载多个逻辑 session，这种方式简单稳定，但多连接测速可能受单条外层 TCP 的吞吐限制；未来可考虑 per-session outer TCP 模式。它依赖 OS TCP 的可靠性和有序性，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务，不等待 RUDP send window，不保存 Data unacked buffer，不发送业务 Data Ack。`Ack` 仍用于 `OpenConnection` handshake。
 - fake-TCP transport 使用 `--transport faketcp`，仅面向 Linux，是 raw packet carrier MVP：网络外观看是 TCP 端口，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP 连接。它需要 root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口；Windows 会返回 `fake-TCP transport is only supported on Linux`。Linux 内核可能对 fake-TCP 端口发送 RST，运行 server 时可能需要手动阻止，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前未自动执行 sudo、iptables 或 nftables。
 - fake-TCP 当前使用 pnet datalink/AF_PACKET，支持 IPv4 TCP header build/parse、checksum、端口/peer 过滤和 encoded packet payload carrier；尚未实现完整 SYN/SYN-ACK/ACK 状态机，可能需要 handshake/state-machine hardening，不建议生产使用。
 - SOCKS5 适合浏览器与 curl 测试，但会产生大量短会话，应视为实验性便利层。

@@ -1,6 +1,7 @@
 //! TCP Transport 的帧边界处理模块。
 //! 实现了 4-byte length-prefixed 的读写操作。
 
+use bytes::{BufMut, BytesMut};
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,11 +30,10 @@ pub async fn write_frame<W: AsyncWriteExt + Unpin>(
         ));
     }
 
-    // 写入 big-endian 的 4 字节长度
-    writer.write_u32(len).await?;
-    // 写入实际数据包
-    writer.write_all(data).await?;
-    writer.flush().await?;
+    let mut frame = BytesMut::with_capacity(4 + data.len());
+    frame.put_u32(len);
+    frame.extend_from_slice(data);
+    writer.write_all(&frame).await?;
 
     Ok(())
 }

@@ -2,6 +2,7 @@
 //! 包含 UDP 发送接收循环、TCP 监听与 session 管理等。
 
 use bytes::{Bytes, BytesMut};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,7 +24,9 @@ use crate::transport::{ConnectionRoute, ConnectionTable, PacketIo};
 use crate::tunnel::keepalive::{
     build_encrypted_keepalive_packet, record_received_keepalive, should_send_keepalive,
 };
-use crate::tunnel::session::{ServerSessionManager, SessionHandle, SessionState};
+use crate::tunnel::session::{
+    ServerSessionManager, SessionHandle, SessionState, TcpTransportStats,
+};
 
 #[allow(clippy::collapsible_if)]
 pub async fn validate_open_connection_packet(
@@ -989,6 +992,10 @@ pub async fn run_tcp(
 
     let connection_table = Arc::new(RwLock::new(ConnectionTable::new()));
     let session_manager = ServerSessionManager::new();
+    let tcp_stats = Arc::new(RwLock::new(HashMap::<
+        crate::tunnel::session::ConnectionId,
+        Arc<TcpTransportStats>,
+    >::new()));
     let session_mgr_sweep = session_manager.clone();
     tokio::spawn(async move {
         loop {
@@ -1014,6 +1021,7 @@ pub async fn run_tcp(
                 let secret_ref = secret.clone();
                 let conn_table_clone = Arc::clone(&connection_table);
                 let session_mgr_clone = session_manager.clone();
+                let tcp_stats_clone = Arc::clone(&tcp_stats);
 
                 // We split the TCP stream. The read_half is passed to the reader loop,
                 // and the write_half is moved to a dedicated writer task.
@@ -1055,8 +1063,10 @@ pub async fn run_tcp(
                                         let tx_out_c = tx_out.clone();
                                         let conn_table_c = Arc::clone(&conn_table_clone);
                                         let session_mgr_c = session_mgr_clone.clone();
+                                        let tcp_stats_c = Arc::clone(&tcp_stats_clone);
                                         let packet_type = packet.header.packet_type.clone();
                                         let conn_id = packet.header.connection_id;
+                                        let frame_len = 4 + frame_data.len();
 
                                         match packet_type {
                                             PacketType::OpenConnection => {
@@ -1122,6 +1132,23 @@ pub async fn run_tcp(
                                                                     use tokio::sync::{
                                                                         Mutex, Notify,
                                                                     };
+
+                                                                    let session_tcp_stats =
+                                                                        Arc::new(
+                                                                            TcpTransportStats::new(
+                                                                            ),
+                                                                        );
+                                                                    {
+                                                                        let mut stats = tcp_stats_c
+                                                                            .write()
+                                                                            .await;
+                                                                        stats.insert(
+                                                                            conn_id,
+                                                                            Arc::clone(
+                                                                                &session_tcp_stats,
+                                                                            ),
+                                                                        );
+                                                                    }
 
                                                                     session_mgr_c.insert(
                                                                         conn_id,
@@ -1202,6 +1229,11 @@ pub async fn run_tcp(
                                                                         session_mgr_c.clone();
                                                                     let read_key =
                                                                         derive_key(&secret_c);
+                                                                    let read_tcp_stats = Arc::clone(
+                                                                        &session_tcp_stats,
+                                                                    );
+                                                                    let read_tcp_stats_map =
+                                                                        Arc::clone(&tcp_stats_c);
 
                                                                     tokio::spawn(async move {
                                                                         let mut tcp_buf = vec![
@@ -1282,6 +1314,13 @@ pub async fn run_tcp(
                                                                                     .await;
                                                                             table.remove(&conn_id);
                                                                         }
+                                                                        {
+                                                                            let mut stats =
+                                                                                read_tcp_stats_map
+                                                                                    .write()
+                                                                                    .await;
+                                                                            stats.remove(&conn_id);
+                                                                        }
 
                                                                         let next_seq = {
                                                                             let mut state =
@@ -1318,13 +1357,21 @@ pub async fn run_tcp(
                                                                                 }
                                                                             }
                                                                         }
+                                                                        read_tcp_stats.log_debug(
+                                                                            "server", conn_id,
+                                                                        );
                                                                     });
 
                                                                     // Spawn Transport TCP -> Target TCP writer task
+                                                                    let write_tcp_stats =
+                                                                        Arc::clone(
+                                                                            &session_tcp_stats,
+                                                                        );
                                                                     tokio::spawn(async move {
                                                                         while let Some(data) =
                                                                             s_rx.recv().await
                                                                         {
+                                                                            let bytes = data.len();
                                                                             if let Err(e) =
                                                                                 t_write_half
                                                                                     .write_all(
@@ -1338,6 +1385,9 @@ pub async fn run_tcp(
                                                                                     e
                                                                                 );
                                                                                 break;
+                                                                            } else {
+                                                                                write_tcp_stats
+                                                                                    .add_server_target_write(bytes);
                                                                             }
                                                                         }
                                                                         let _ = t_write_half
@@ -1526,6 +1576,13 @@ pub async fn run_tcp(
                                                     continue;
                                                 }
 
+                                                if let Some(stats) = {
+                                                    let stats_map = tcp_stats_c.read().await;
+                                                    stats_map.get(&conn_id).cloned()
+                                                } {
+                                                    stats.add_server_outer_read(frame_len);
+                                                }
+
                                                 let read_key = derive_key(&secret_c);
                                                 let aad = build_aad(&packet.header);
                                                 match decrypt_payload(
@@ -1612,6 +1669,13 @@ pub async fn run_tcp(
                                                             let mut table =
                                                                 conn_table_c.write().await;
                                                             table.remove(&conn_id);
+                                                        }
+                                                        if let Some(stats) = {
+                                                            let mut stats_map =
+                                                                tcp_stats_c.write().await;
+                                                            stats_map.remove(&conn_id)
+                                                        } {
+                                                            stats.log_debug("server", conn_id);
                                                         }
                                                     } else {
                                                         use crate::tunnel::session::UnknownState;

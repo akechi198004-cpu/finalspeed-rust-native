@@ -9,7 +9,9 @@ use crate::protocol::packet::{FLAG_ENCRYPTED, Packet, PacketType};
 use crate::protocol::payload::parse_error_payload;
 use crate::protocol::{decode_packet, encode_packet};
 use crate::transport::{ConnectionIdGenerator, PacketIo};
-use crate::tunnel::session::{ClientSessionManager, SessionHandle, SessionState};
+use crate::tunnel::session::{
+    ClientSessionManager, SessionHandle, SessionState, TcpTransportStats,
+};
 
 use bytes::{Bytes, BytesMut};
 use std::net::SocketAddr;
@@ -1867,6 +1869,7 @@ pub async fn run_tcp(
                                             tcp_stream.into_split();
                                         let (s_tx, mut s_rx) = mpsc::channel::<Bytes>(1024);
                                         let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
+                                        let tcp_stats = Arc::new(TcpTransportStats::new());
 
                                         use crate::tunnel::reliability::{ReceiveState, SendState};
                                         use tokio::sync::{Mutex, Notify};
@@ -1893,6 +1896,7 @@ pub async fn run_tcp(
 
                                         match encode_packet(&packet) {
                                             Ok(encoded) => {
+                                                let frame_len = 4 + encoded.len();
                                                 if let Err(e) =
                                                     tx_out_clone.send(Bytes::from(encoded)).await
                                                 {
@@ -1906,6 +1910,7 @@ pub async fn run_tcp(
                                                         "Sent OpenConnection packet for {} to server",
                                                         conn_id
                                                     );
+                                                    tcp_stats.add_client_outer_write(frame_len);
 
                                                     let handshake_result = tokio::time::timeout(
                                                         crate::app::constants::HANDSHAKE_TIMEOUT,
@@ -1944,6 +1949,7 @@ pub async fn run_tcp(
                                                     let read_session_mgr =
                                                         session_mgr_clone.clone();
                                                     let read_secret_clone = secret_clone.clone();
+                                                    let read_tcp_stats = Arc::clone(&tcp_stats);
 
                                                     tokio::spawn(async move {
                                                         let mut tcp_buf =
@@ -1972,6 +1978,8 @@ pub async fn run_tcp(
                                                                     break;
                                                                 }
                                                                 Ok(n) => {
+                                                                    read_tcp_stats
+                                                                        .add_client_local_read(n);
                                                                     let plaintext = &tcp_buf[..n];
 
                                                                     let seq = {
@@ -2017,8 +2025,12 @@ pub async fn run_tcp(
                                                                                     &data_packet,
                                                                                 )
                                                                             {
+                                                                                let frame_len = 4
+                                                                                    + encoded.len();
                                                                                 if let Err(e) = read_tx_out.send(Bytes::from(encoded)).await {
                                                                                     tracing::warn!("Failed to send Data packet to server: {}", e);
+                                                                                } else {
+                                                                                    read_tcp_stats.add_client_outer_write(frame_len);
                                                                                 }
                                                                             }
                                                                         }
@@ -2066,12 +2078,22 @@ pub async fn run_tcp(
                                                                 if let Ok(encoded) =
                                                                     encode_packet(&close_packet)
                                                                 {
-                                                                    let _ = read_tx_out
+                                                                    let frame_len =
+                                                                        4 + encoded.len();
+                                                                    if read_tx_out
                                                                         .send(Bytes::from(encoded))
-                                                                        .await;
+                                                                        .await
+                                                                        .is_ok()
+                                                                    {
+                                                                        read_tcp_stats
+                                                                            .add_client_outer_write(
+                                                                                frame_len,
+                                                                            );
+                                                                    }
                                                                 }
                                                             }
                                                         }
+                                                        read_tcp_stats.log_debug("client", conn_id);
                                                     });
 
                                                     tokio::spawn(async move {
@@ -2197,6 +2219,7 @@ pub async fn run_tcp(
                                                 tcp_stream.into_split();
                                             let (s_tx, mut s_rx) = mpsc::channel::<Bytes>(1024);
                                             let (hs_tx, hs_rx) = tokio::sync::oneshot::channel();
+                                            let tcp_stats = Arc::new(TcpTransportStats::new());
 
                                             use crate::tunnel::reliability::{
                                                 ReceiveState, SendState,
@@ -2225,6 +2248,7 @@ pub async fn run_tcp(
 
                                             match encode_packet(&packet) {
                                                 Ok(encoded) => {
+                                                    let frame_len = 4 + encoded.len();
                                                     if let Err(e) = tx_out_inner
                                                         .send(Bytes::from(encoded))
                                                         .await
@@ -2240,6 +2264,7 @@ pub async fn run_tcp(
                                                             "Sent OpenConnection packet for SOCKS5 {} to server",
                                                             conn_id
                                                         );
+                                                        tcp_stats.add_client_outer_write(frame_len);
 
                                                         let handshake_result =
                                                             tokio::time::timeout(
@@ -2297,6 +2322,7 @@ pub async fn run_tcp(
                                                             session_mgr_inner.clone();
                                                         let read_secret_clone =
                                                             secret_inner.clone();
+                                                        let read_tcp_stats = Arc::clone(&tcp_stats);
 
                                                         tokio::spawn(async move {
                                                             let mut tcp_buf =
@@ -2330,6 +2356,10 @@ pub async fn run_tcp(
                                                                         break;
                                                                     }
                                                                     Ok(n) => {
+                                                                        read_tcp_stats
+                                                                            .add_client_local_read(
+                                                                                n,
+                                                                            );
                                                                         let plaintext =
                                                                             &tcp_buf[..n];
 
@@ -2376,8 +2406,11 @@ pub async fn run_tcp(
                                                                                         as u16;
 
                                                                                 if let Ok(encoded) = encode_packet(&data_packet) {
+                                                                                    let frame_len = 4 + encoded.len();
                                                                                     if let Err(e) = read_tx_out.send(Bytes::from(encoded)).await {
                                                                                         tracing::warn!("Failed to send SOCKS5 Data packet: {}", e);
+                                                                                    } else {
+                                                                                        read_tcp_stats.add_client_outer_write(frame_len);
                                                                                     }
                                                                                 }
                                                                             }
@@ -2427,14 +2460,22 @@ pub async fn run_tcp(
                                                                     if let Ok(encoded) =
                                                                         encode_packet(&close_packet)
                                                                     {
-                                                                        let _ = read_tx_out
+                                                                        let frame_len =
+                                                                            4 + encoded.len();
+                                                                        if read_tx_out
                                                                             .send(Bytes::from(
                                                                                 encoded,
                                                                             ))
-                                                                            .await;
+                                                                            .await
+                                                                            .is_ok()
+                                                                        {
+                                                                            read_tcp_stats.add_client_outer_write(frame_len);
+                                                                        }
                                                                     }
                                                                 }
                                                             }
+                                                            read_tcp_stats
+                                                                .log_debug("client", conn_id);
                                                         });
 
                                                         tokio::spawn(async move {

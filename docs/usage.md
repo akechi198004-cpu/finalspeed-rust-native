@@ -90,7 +90,9 @@ UDP 是默认值，以下两条命令等价：
 ./target/release/fspeed-rs client --server SERVER_IP:15000 --secret test123_secure --socks5 127.0.0.1:1080 --transport tcp
 ```
 
-TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。payload 仍使用 ChaCha20-Poly1305 AEAD 加密。已建立会话会发送 encrypted keepalive，默认每 30 秒一次，用于减少浏览器/SOCKS5 长连接闲置后失效。
+TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。发送端以 single write 写出 length + encoded packet，不对每个 frame 额外 flush。payload 仍使用 ChaCha20-Poly1305 AEAD 加密。已建立会话会发送 encrypted keepalive，默认每 30 秒一次，用于减少浏览器/SOCKS5 长连接闲置后失效。
+
+当前 TCP transport 默认使用一条 shared outer TCP connection 承载多个逻辑 session。这种方式简单稳定，但多连接测速可能受单条外层 TCP 的吞吐限制；未来可考虑 per-session outer TCP 模式。
 
 TCP transport 依赖 OS TCP 的可靠性和有序性，不启动 RUDP retransmission task，不使用 RUDP send window 阻塞业务 Data 发送，不保存 Data unacked buffer，也不依赖 Data Ack 推进发送。`Ack` packet 仍用于 `OpenConnection` handshake。UDP transport 仍保留 RUDP-style reliability。
 
