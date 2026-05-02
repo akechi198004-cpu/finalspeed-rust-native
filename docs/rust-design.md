@@ -8,10 +8,11 @@
 
 `fspeed-rs` 是基于 Tokio 的 Rust 原生 client/server TCP 隧道。
 
-- Server 支持 UDP transport 或 TCP fallback。
+- Server 支持 UDP transport、TCP fallback，以及 Linux-only experimental fake-TCP 边界。
 - Client 通过 `--map` 本地监听和/或本地 SOCKS5 监听接收连接。
 - UDP 路径中一个 datagram 对应一个 encoded packet。
 - TCP 路径中通过 client->server TCP stream 发送 framed packet。
+- fake-TCP 路径从网络外观看是 TCP packet，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP connection；当前只实现 IPv4/TCP packet wrapper helper 与 runtime 边界。
 - payload 使用 ChaCha20-Poly1305 加密，key 由 `--secret` 经 HKDF-SHA256 派生。
 - header 保持明文，但通过 AEAD AAD 做完整性认证。
 - 协议当前仅保证 Rust client 与 Rust server 之间自兼容。
@@ -48,6 +49,16 @@ fspeed-rs client \
   --transport tcp
 ```
 
+Client（SOCKS5 + experimental fake-TCP，仅 Linux）：
+
+```bash
+fspeed-rs client \
+  --server example.com:443 \
+  --secret test123_secure \
+  --socks5 127.0.0.1:1080 \
+  --transport faketcp
+```
+
 ## Packet 模型
 
 当前通用 header 为 22 bytes（big-endian）：
@@ -65,6 +76,14 @@ fspeed-rs client \
 | 20 | `payload_len` | 2 |
 
 packet type 定义为 `OpenConnection = 1`、`Data = 2`、`Ack = 3`、`Close = 4`、`Error = 5`。
+
+## Transport 模型
+
+- UDP：一个 UDP datagram 对应一个 encoded packet。
+- TCP fallback：`u32` big-endian length-prefixed frame + encoded packet，使用 OS `TcpListener` / `TcpStream`。
+- fake-TCP：`IPv4 header || TCP header || encoded_packet`，网络外观看是 TCP 端口，但 payload 是现有 encoded packet。packet header 格式不变，payload 仍使用 ChaCha20-Poly1305 AEAD 加密。
+
+fake-TCP 是 Linux-only experimental 功能。真实收发需要 raw packet injection/capture、root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口，并且可能需要手动阻止 Linux kernel RST，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前实现尚未接入 raw socket 后端，也未实现完整 TCP 三次握手状态机；Windows 运行时会返回 `fake-TCP transport is only supported on Linux`。
 
 ## OpenConnection
 
@@ -125,3 +144,4 @@ client 与 server manager 均支持：
 - 拥塞控制；
 - 配置文件驱动的映射管理；
 - SOCKS5 `UDP ASSOCIATE` 支持。
+- 生产级 fake-TCP raw socket 收发、IPv6、RST 管理与握手/state-machine hardening。

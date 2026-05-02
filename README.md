@@ -8,6 +8,7 @@
 
 - 已实现 UDP transport（默认模式）。
 - 已实现 TCP transport fallback（基于长度前缀 framing）。
+- 已新增 Linux-only experimental `--transport faketcp` 的 CLI、文档、IPv4/TCP packet wrapper helper 与运行时边界；真实 raw socket 收发尚未接入主数据路径。
 - 已实现静态 `--map` TCP 转发。
 - 已实现客户端 SOCKS5 无认证 `CONNECT`。
 - `OpenConnection`、`Data`、`Ack`、`Error`、`Close`、`KeepAlive` 的 payload 均已加密。
@@ -95,6 +96,27 @@ u32 big-endian length || encoded_packet
 
 已建立会话会发送 encrypted keepalive，默认间隔 30 秒；keepalive timeout 为 120 秒，session idle timeout 仍为 300 秒。
 
+## fake-TCP 模式（Linux-only experimental）
+
+`--transport faketcp` 是实验性的 Linux-only fake TCP packet carrier。它从网络外观看是 TCP 端口，因此云防火墙/安全组应放行所选 TCP 端口；程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP 连接。
+
+fake-TCP payload 仍承载现有 encoded packet，不修改 packet header 格式，不修改 ChaCha20-Poly1305 AEAD 加密逻辑。当前代码已提供 IPv4/TCP header 构造/解析、IPv4 checksum、TCP pseudo-header checksum、端口/peer 过滤测试，以及 client/server 运行时边界；真实 raw packet send/receive 后端尚未接入 data path，不建议生产使用。
+
+运行真实 fake-TCP 需要 root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`。Linux 内核可能对 fake-TCP 端口发送 RST，server 机器可能需要手动阻止，例如：
+
+```bash
+sudo iptables -A OUTPUT -p tcp --sport 443 --tcp-flags RST RST -j DROP
+```
+
+程序不会自动执行 sudo，也不会自动修改 iptables/nftables。Windows 可以解析 `--transport faketcp`，但运行时会返回 `fake-TCP transport is only supported on Linux`。
+
+示例：
+
+```bash
+./target/release/fspeed-rs server --listen 0.0.0.0:443 --secret test123 --transport faketcp
+./target/release/fspeed-rs client --server SERVER_IP:443 --secret test123 --transport faketcp --socks5 127.0.0.1:1080
+```
+
 ## SOCKS5 示例
 
 SOCKS5 仅运行在 client 侧。
@@ -174,6 +196,7 @@ SOCKS5 + TCP fallback：
 - 暂不支持 SOCKS5 `UDP ASSOCIATE`、`BIND`、用户名/密码认证。
 - UDP 模式依赖防火墙、NAT、云安全组对 UDP 的可达性。
 - TCP fallback 解决的是可达性，不是加速能力。
+- fake-TCP 是 Linux-only experimental，当前仅完成 packet helper 与 clean API/runtime boundary；尚未实现真实 raw socket 收发、IPv6 或完整 handshake/state-machine hardening。
 - 开启 `--allow` 时，domain target 会被当前 server 策略拒绝（allowlist 仅接受 `SocketAddr`）。
 
 ## 路线图
@@ -199,6 +222,7 @@ for networks where UDP is blocked.
 
 - UDP transport is implemented and is the default.
 - TCP transport fallback is implemented with length-prefixed packet framing.
+- Linux-only experimental `--transport faketcp` now has CLI/docs, IPv4/TCP packet wrapper helpers, and a runtime boundary; the real raw socket data path is not wired yet.
 - Static `--map` TCP forwarding is implemented.
 - Client-side SOCKS5 no-auth `CONNECT` is implemented.
 - Payloads for `OpenConnection`, `Data`, `Ack`, `Error`, and `Close` are encrypted.
@@ -284,6 +308,27 @@ TCP fallback uses:
 u32 big-endian length || encoded_packet
 ```
 
+## fake-TCP Mode (Linux-only experimental)
+
+`--transport faketcp` is an experimental Linux-only fake TCP packet carrier. It looks like TCP on the network, so cloud firewalls and security groups should allow the selected TCP port. Internally it is not `TcpListener` / `TcpStream`, and it is not a real TCP connection.
+
+fake-TCP still carries one existing encoded packet per payload. It does not change the packet header format or the ChaCha20-Poly1305 AEAD payload encryption. The current code provides IPv4/TCP header build/parse helpers, IPv4 checksum, TCP pseudo-header checksum, port/peer filtering tests, and client/server runtime boundaries. The real raw packet send/receive backend is not wired into the data path yet, so this is not recommended for production.
+
+Real fake-TCP raw packet I/O requires root or `CAP_NET_RAW` / `CAP_NET_ADMIN`. Linux may emit kernel RST packets for fake-TCP ports, so the server host may need a manual rule such as:
+
+```bash
+sudo iptables -A OUTPUT -p tcp --sport 443 --tcp-flags RST RST -j DROP
+```
+
+The program does not run sudo and does not modify iptables/nftables automatically. Windows can parse `--transport faketcp`, but runtime returns `fake-TCP transport is only supported on Linux`.
+
+Example:
+
+```bash
+./target/release/fspeed-rs server --listen 0.0.0.0:443 --secret test123 --transport faketcp
+./target/release/fspeed-rs client --server SERVER_IP:443 --secret test123 --transport faketcp --socks5 127.0.0.1:1080
+```
+
 ## SOCKS5 Example
 
 SOCKS5 runs on the client side only.
@@ -364,6 +409,7 @@ Download them from the Artifacts section of the GitHub Actions run page.
 - No UDP ASSOCIATE, BIND, or username/password SOCKS5 auth.
 - UDP transport requires firewall, NAT, and cloud security group UDP reachability.
 - TCP fallback is for reachability, not acceleration.
+- fake-TCP is Linux-only experimental and currently provides packet helpers plus a clean API/runtime boundary only; real raw socket I/O, IPv6, and handshake/state-machine hardening are not implemented.
 - With `--allow`, domain targets are rejected by current server policy because allowlist entries are socket addresses.
 
 ## Roadmap

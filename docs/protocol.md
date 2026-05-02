@@ -49,6 +49,22 @@ u32_be length || encoded_packet
 
 TCP frame length 指编码后 packet 长度，不包含前置 4-byte length。当前最大 frame size 为 `2 MiB`。
 
+fake-TCP transport（experimental / Linux-only）：
+
+```text
+IPv4 header || TCP header || encoded_packet
+```
+
+fake-TCP 从网络外观看是 TCP packet，云防火墙/安全组应放行所选 TCP 端口，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP connection。每个 fake-TCP payload 承载一个现有 `encoded_packet`，packet header 格式不变，payload 仍使用 ChaCha20-Poly1305 AEAD 加密，明文 header 仍参与 AAD 认证。当前 helper 仅支持 IPv4，已实现 IPv4 checksum 与 TCP pseudo-header checksum 的构造/校验，以及目标端口/源 peer 过滤。
+
+当前 fake-TCP raw socket 收发后端尚未接入 client/server data path；运行 `--transport faketcp` 会进入清晰的 experimental runtime 边界。完整实现需要 Linux raw packet send/receive 权限（root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`），且可能需要手动阻止 Linux kernel RST，例如：
+
+```bash
+sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP
+```
+
+程序不会自动执行 sudo，也不会自动修改 iptables/nftables。Windows 不支持 fake-TCP，并返回 `fake-TCP transport is only supported on Linux`。
+
 ## 加密（Encryption）
 
 payload 加密算法为 ChaCha20-Poly1305。key 由 CLI shared secret 通过 HKDF-SHA256 派生：

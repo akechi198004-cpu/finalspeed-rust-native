@@ -5,12 +5,13 @@
 ## 已实现功能
 
 - 提供 `server` 与 `client` CLI 子命令。
-- 支持 `--transport udp|tcp`，默认 `udp`。
+- 支持 `--transport udp|tcp|faketcp`，默认 `udp`。
 - Server 参数：`--listen`、`--secret`、可选 `--allow`、可选 `--transport`。
 - Client 参数：`--server`、`--secret`、可重复 `--map`、可选 `--socks5`、可选 `--transport`。
 - UDP transport：一个 UDP datagram 对应一个 encoded packet。
 - TCP fallback：单条 client->server 长连接承载带长度前缀的 encoded packet。
 - TCP framing：`u32` big-endian frame length + packet bytes。
+- fake-TCP：新增 Linux-only experimental 模块边界与 IPv4/TCP packet wrapper helper；当前 raw socket 收发后端尚未接入 client/server data path。
 - 支持通过 `--map local_addr:local_port=target_host:target_port` 做静态 TCP 映射。
 - 支持 client 侧 `--socks5` 监听。
 - 已实现 SOCKS5 no-auth greeting 与 `CONNECT`。
@@ -28,7 +29,7 @@
 
 ## 未实现能力
 
-- Fake TCP、raw socket、pcap、TUN/TAP、防火墙自动操控。
+- 完整 fake-TCP raw socket 收发、pcap、TUN/TAP、防火墙自动操控。
 - UDP ASSOCIATE 或 UDP 应用代理。
 - SOCKS5 BIND。
 - SOCKS5 用户名/密码认证。
@@ -44,6 +45,8 @@
 
 - 当前可靠性运行时已启用，但较简化：固定 RTO、固定 packet 窗口、仅累计 ACK。
 - TCP fallback 在 TCP stream 上复用同一套 packet/crypto/ACK 处理，可用于 UDP 被屏蔽的场景，但不是加速模式；TCP transport 不启动重传任务。
+- fake-TCP transport 使用 `--transport faketcp`，仅面向 Linux，当前是 packet carrier/helper MVP：网络外观看是 TCP 端口，但程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP 连接。它需要 raw packet send/receive、root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`，云防火墙/安全组应放行所选 TCP 端口；Windows 会返回 `fake-TCP transport is only supported on Linux`。Linux 内核可能对 fake-TCP 端口发送 RST，运行 server 时可能需要手动阻止，例如 `sudo iptables -A OUTPUT -p tcp --sport <PORT> --tcp-flags RST RST -j DROP`。当前未自动执行 sudo、iptables 或 nftables。
+- fake-TCP 当前仅实现 IPv4 TCP header build/parse helper、checksum helper、端口/peer 过滤和 encoded packet payload carrier；尚未实现完整 SYN/SYN-ACK/ACK 状态机，可能需要 handshake/state-machine hardening，不建议生产使用。
 - SOCKS5 适合浏览器与 curl 测试，但会产生大量短会话，应视为实验性便利层。
 
 ## Transport 对比
@@ -52,6 +55,7 @@
 |---|---:|---|---:|---|
 | `udp` | 已实现 | 一个 datagram = 一个 encoded packet | 是 | 主路径，使用 `UdpSocket::send_to` / `recv_from`。 |
 | `tcp` | 已实现 | `u32` big-endian length + encoded packet | 否 | UDP 不可达时的 fallback，使用单条 client->server TCP 连接。 |
+| `faketcp` | 实验性边界 | IPv4/TCP payload = 一个 encoded packet | 否 | Linux-only fake TCP packet carrier；需要 raw packet 权限；当前未接入真实 raw socket 收发。 |
 
 ## 安全模型
 

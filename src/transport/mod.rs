@@ -1,6 +1,8 @@
 //! 传输层通用状态定义。
 //! 主要包含 ConnectionIdGenerator 用于自增连接 ID。
 
+pub mod faketcp;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};

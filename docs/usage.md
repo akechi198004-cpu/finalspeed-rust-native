@@ -92,6 +92,31 @@ UDP 是默认值，以下两条命令等价：
 
 TCP fallback 的 framing 为：`u32` big-endian length + packet bytes。已建立会话会发送 encrypted keepalive，默认每 30 秒一次，用于减少浏览器/SOCKS5 长连接闲置后失效。
 
+## fake-TCP Transport（Linux-only experimental）
+
+`--transport faketcp` 是实验性的 Linux-only fake TCP packet carrier。它从网络外观看是 TCP 端口，因此云防火墙/安全组应放行所选 TCP 端口；程序内部不是 `TcpListener` / `TcpStream`，也不是真实 TCP 连接。fake-TCP payload 仍承载现有 encoded packet，payload 仍使用 ChaCha20-Poly1305 AEAD 加密，packet header 仍为明文并参与 AAD 认证。
+
+当前代码已提供 CLI、运行时边界、IPv4/TCP packet build/parse helper 和 checksum 测试，但 raw socket 收发后端尚未接入 client/server data path，不建议生产使用。
+
+Server 示例：
+
+```bash
+./target/release/fspeed-rs server --listen 0.0.0.0:443 --secret test123 --transport faketcp
+```
+
+Client 示例：
+
+```bash
+./target/release/fspeed-rs client --server SERVER_IP:443 --secret test123 --transport faketcp --socks5 127.0.0.1:1080
+```
+
+真实 fake-TCP raw packet send/receive 需要 root 或 `CAP_NET_RAW` / `CAP_NET_ADMIN`。Linux 内核可能向 fake-TCP 端口发送 RST，运行 server 时可能需要手动阻止，例如：
+
+```bash
+sudo iptables -A OUTPUT -p tcp --sport 443 --tcp-flags RST RST -j DROP
+```
+
+程序不会自动执行 sudo，也不会自动修改 iptables/nftables。Windows 可以解析 `--transport faketcp`，但运行时会返回 `fake-TCP transport is only supported on Linux`。
 
 ## KeepAlive
 

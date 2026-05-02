@@ -21,17 +21,22 @@ pub struct Cli {
 /// 传输层模式选项。
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Default)]
 pub enum TransportMode {
-    /// 默认使用 UDP 传输。
-    ///
-    /// 开启 RUDP 级的重传任务，并在 UDP 数据报文基础上封装。
+    /// UDP datagram transport with RUDP-style reliability.
     #[default]
     Udp,
-    /// 备用 TCP 传输。
-    ///
-    /// 使用 4 字节长度前缀 Framing，依赖 OS TCP 的可靠性，
-    /// 不再启动自身的重传任务。
+    /// TCP fallback using length-prefixed encrypted packets.
     Tcp,
+    /// Linux-only experimental fake TCP packet transport.
+    #[value(name = "faketcp")]
+    FakeTcp,
 }
+
+const TRANSPORT_HELP: &str = "Transport mode: udp, tcp, or faketcp";
+const TRANSPORT_LONG_HELP: &str = "\
+Transport mode:
+  udp = UDP datagram transport with RUDP-style reliability
+  tcp = TCP fallback using length-prefixed encrypted packets
+  faketcp = Linux-only experimental fake TCP transport. Requires root or CAP_NET_RAW/CAP_NET_ADMIN. Cloud firewall should allow the selected TCP port. Not supported on Windows.";
 
 /// 支持的命令行子命令，分别为 Server 和 Client。
 #[derive(Subcommand, Debug)]
@@ -51,7 +56,7 @@ pub enum Commands {
         allow: Option<Vec<SocketAddr>>,
 
         /// 指定底层使用的传输协议。
-        #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
+        #[arg(long, value_enum, default_value_t = TransportMode::Udp, help = TRANSPORT_HELP, long_help = TRANSPORT_LONG_HELP)]
         transport: TransportMode,
     },
 
@@ -74,7 +79,7 @@ pub enum Commands {
         socks5: Option<SocketAddr>,
 
         /// 指定底层使用的传输协议。必须与服务端配置相同。
-        #[arg(long, value_enum, default_value_t = TransportMode::Udp)]
+        #[arg(long, value_enum, default_value_t = TransportMode::Udp, help = TRANSPORT_HELP, long_help = TRANSPORT_LONG_HELP)]
         transport: TransportMode,
     },
 }
@@ -105,7 +110,7 @@ fn parse_port_map(s: &str) -> std::result::Result<PortMap, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn test_parse_single_map() {
@@ -213,6 +218,98 @@ mod tests {
                 assert_eq!(socks5.unwrap().to_string(), "127.0.0.1:1080");
             }
             _ => panic!("Expected Client command"),
+        }
+    }
+
+    #[test]
+    fn test_default_transport_is_udp() {
+        let args = vec![
+            "fspeed-rs",
+            "server",
+            "--listen",
+            "127.0.0.1:150",
+            "--secret",
+            "test123",
+        ];
+
+        let cli = Cli::parse_from(args);
+
+        match cli.command {
+            Commands::Server { transport, .. } => {
+                assert_eq!(transport, TransportMode::Udp);
+            }
+            _ => panic!("Expected Server command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_transport_modes() {
+        for (raw, expected) in [
+            ("udp", TransportMode::Udp),
+            ("tcp", TransportMode::Tcp),
+            ("faketcp", TransportMode::FakeTcp),
+        ] {
+            let args = vec![
+                "fspeed-rs",
+                "client",
+                "--server",
+                "127.0.0.1:150",
+                "--secret",
+                "test123",
+                "--socks5",
+                "127.0.0.1:1080",
+                "--transport",
+                raw,
+            ];
+
+            let cli = Cli::parse_from(args);
+
+            match cli.command {
+                Commands::Client { transport, .. } => {
+                    assert_eq!(transport, expected);
+                }
+                _ => panic!("Expected Client command"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_transport_fails() {
+        let args = vec![
+            "fspeed-rs",
+            "client",
+            "--server",
+            "127.0.0.1:150",
+            "--secret",
+            "test123",
+            "--socks5",
+            "127.0.0.1:1080",
+            "--transport",
+            "quic",
+        ];
+
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn test_transport_help_mentions_faketcp() {
+        let mut cmd = Cli::command();
+        let server_help = cmd
+            .find_subcommand_mut("server")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        let client_help = cmd
+            .find_subcommand_mut("client")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+
+        for help in [server_help, client_help] {
+            assert!(help.contains("faketcp"));
+            assert!(help.contains("Linux-only experimental fake TCP transport"));
+            assert!(help.contains("CAP_NET_RAW/CAP_NET_ADMIN"));
+            assert!(help.contains("Not supported on Windows"));
         }
     }
 }

@@ -85,6 +85,30 @@ pub enum FSpeedError {
     /// 时间戳格式非法。
     #[error("Invalid timestamp format")]
     InvalidTimestamp,
+
+    /// 当前平台不支持某项功能。
+    #[error("{0}")]
+    UnsupportedPlatform(String),
+
+    /// fake-TCP raw packet 权限不足。
+    #[error("fake-TCP requires root or CAP_NET_RAW/CAP_NET_ADMIN on Linux")]
+    RawSocketPermissionDenied,
+
+    /// fake-TCP packet 构造失败。
+    #[error("fake-TCP packet build failed: {0}")]
+    FakeTcpPacketBuildFailed(String),
+
+    /// fake-TCP packet 解析失败。
+    #[error("fake-TCP packet parse failed: {0}")]
+    FakeTcpPacketParseFailed(String),
+
+    /// fake-TCP 暂不支持该地址族。
+    #[error("fake-TCP currently supports IPv4 only")]
+    FakeTcpUnsupportedAddressFamily,
+
+    /// fake-TCP I/O 错误。
+    #[error("fake-TCP I/O error: {0}")]
+    FakeTcpIoError(String),
 }
 
 /// 通用 Result 类型。

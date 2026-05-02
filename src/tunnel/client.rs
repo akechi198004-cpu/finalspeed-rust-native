@@ -36,7 +36,21 @@ pub async fn run(
     match transport {
         TransportMode::Udp => run_udp(server, secret, map, socks5).await,
         TransportMode::Tcp => run_tcp(server, secret, map, socks5).await,
+        TransportMode::FakeTcp => run_faketcp(server, secret, map, socks5).await,
     }
+}
+
+async fn run_faketcp(
+    server: String,
+    _secret: String,
+    _map: Vec<PortMap>,
+    _socks5: Option<SocketAddr>,
+) -> anyhow::Result<()> {
+    tracing::warn!(
+        server = %server,
+        "fake-TCP is Linux-only experimental raw packet transport; it is not TcpListener/TcpStream"
+    );
+    Err(crate::transport::faketcp::linux_impl::runtime_error().into())
 }
 
 fn spawn_udp_keepalive_task(
