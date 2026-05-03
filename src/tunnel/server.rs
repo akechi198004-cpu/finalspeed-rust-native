@@ -1596,12 +1596,30 @@ pub async fn run_tcp(
                                                         {
                                                             session.touch();
                                                             if let Err(e) =
-                                                                session.sender.send(plaintext).await
+                                                                session.sender.try_send(plaintext)
                                                             {
                                                                 tracing::warn!(
-                                                                    "Failed to forward data to session writer task: {}",
+                                                                    "TCP transport target writer queue unavailable for {}: {}; closing session to avoid blocking shared outer TCP reader",
+                                                                    conn_id,
                                                                     e
                                                                 );
+                                                                session_mgr_c
+                                                                    .remove(&conn_id)
+                                                                    .await;
+                                                                {
+                                                                    let mut table =
+                                                                        conn_table_c.write().await;
+                                                                    table.remove(&conn_id);
+                                                                }
+                                                                if let Some(stats) = {
+                                                                    let mut stats_map =
+                                                                        tcp_stats_c.write().await;
+                                                                    stats_map.remove(&conn_id)
+                                                                } {
+                                                                    stats.log_debug(
+                                                                        "server", conn_id,
+                                                                    );
+                                                                }
                                                             }
                                                         } else {
                                                             use crate::tunnel::session::UnknownState;

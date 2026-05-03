@@ -1553,12 +1553,13 @@ pub async fn run_tcp(
                                                 session_mgr_recv.lookup(&conn_id).await
                                             {
                                                 session.touch();
-                                                if let Err(e) = session.sender.send(plaintext).await
-                                                {
+                                                if let Err(e) = session.sender.try_send(plaintext) {
                                                     tracing::warn!(
-                                                        "Failed to forward data to local TCP writer task: {}",
+                                                        "TCP transport local writer queue unavailable for {}: {}; closing session to avoid blocking shared outer TCP reader",
+                                                        conn_id,
                                                         e
                                                     );
+                                                    session_mgr_recv.remove(&conn_id).await;
                                                 }
                                             } else {
                                                 use crate::tunnel::session::UnknownState;
